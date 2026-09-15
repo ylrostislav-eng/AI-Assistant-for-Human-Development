@@ -22,6 +22,7 @@ PGDATA="${PGDATA:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.pgdata}"
 PGUSER_NAME="${PGUSER_NAME:-system}"
 DEV_DB="${DEV_DB:-system_dev}"
 TEST_DB="${TEST_DB:-system_test}"
+RUNTIME_ROLE="${RUNTIME_ROLE:-app_runtime}"
 
 find_bindir() {
   # Версия сервера зависит от дистрибутива, поэтому берётся самая новая из
@@ -85,6 +86,20 @@ cmd_start() {
     fi
   done
 
+  # Роль времени выполнения создаётся здесь, а не миграцией: создание ролей
+  # требует прав, которых у мигратора может не быть в managed PostgreSQL.
+  # NOSUPERUSER и NOBYPASSRLS обязательны — под суперпользователем политики RLS
+  # не действуют, и изоляция пользователей исчезает молча.
+  psql -h 127.0.0.1 -p "$PGPORT" -U "$PGUSER_NAME" -d "$TEST_DB" -q <<SQL
+DO \$\$
+BEGIN
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$RUNTIME_ROLE') THEN
+    EXECUTE 'CREATE ROLE $RUNTIME_ROLE LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE';
+  END IF;
+END
+\$\$;
+SQL
+
   cmd_url
 }
 
@@ -107,7 +122,10 @@ cmd_status() {
 }
 
 cmd_url() {
+  # Две строки подключения: миграции идут владельцем, приложение — ролью без
+  # BYPASSRLS, иначе политики изоляции не действуют.
   echo "DATABASE_URL=postgres://$PGUSER_NAME@127.0.0.1:$PGPORT/$TEST_DB"
+  echo "RUNTIME_DATABASE_URL=postgres://$RUNTIME_ROLE@127.0.0.1:$PGPORT/$TEST_DB"
 }
 
 case "${1:-start}" in
