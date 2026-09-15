@@ -8,7 +8,7 @@
     "dev": "tsx watch src/server.ts",
     "start": "tsx src/server.ts",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run tests/unit",
+    "test": "vitest run tests/unit tests/contracts",
     "test:integration": "vitest run tests/integration",
     "test:spikes": "vitest run spikes",
     "test:shuffle": "vitest run tests/integration --sequence.shuffle",
@@ -21,6 +21,9 @@
   "devDependencies": {
     "@types/node": "22.20.2",
     "@types/pg": "8.23.1",
+    "ajv": "8.20.0",
+    "ajv-formats": "3.0.1",
+    "yaml": "2.9.1",
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vitest": "5.0.1"

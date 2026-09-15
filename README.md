@@ -45,4 +45,4 @@ npm run dev                      # GET /health и /health/ready
 
 Исходный файл сохранён [без изменений](docs/source/original-concept.ru.md). Документы написаны по его требованиям; предложенные уточнения обозначены явно. Числа игрового баланса — проверяемая стартовая гипотеза, а не научная оценка способностей человека.
 
-Машиночитаемые черновики: [баланс](docs/contracts/progression-v0.1.json), [конверт команды](docs/contracts/command-envelope.schema.json), [AI tool](docs/contracts/complete-quest.tool.json). Проверка расчётов: `python3 docs/validation/check_architecture.py`.
+Машиночитаемые контракты: [баланс](packages/rules/progression/progression-v0.1.json), [конверт команды](packages/contracts/schemas/command-envelope.schema.json), [AI tool](packages/contracts/schemas/complete-quest.tool.json). Проверка расчётов: `python3 docs/validation/check_architecture.py`.

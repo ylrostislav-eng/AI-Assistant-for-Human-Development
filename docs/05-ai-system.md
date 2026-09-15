@@ -85,7 +85,7 @@ Timeout: chat request 30s, roadmap job 90s; UI может закрыться и 
 
 ## 5. Пример strict tool
 
-Полная машиночитаемая схема: [complete-quest.tool.json](contracts/complete-quest.tool.json).
+Полная машиночитаемая схема: [complete-quest.tool.json](../packages/contracts/schemas/complete-quest.tool.json).
 
 Пример arguments:
 

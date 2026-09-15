@@ -1,0 +1,14 @@
+{
+  "schema_version": 1,
+  "command_id": "11111111-1111-4111-8111-111111111111",
+  "device_id": "22222222-2222-4222-8222-222222222222",
+  "kind": "complete_quest",
+  "aggregate_id": "33333333-3333-4333-8333-333333333333",
+  "expected_version": 4,
+  "client_created_at": "2026-09-15T12:00:00Z",
+  "depends_on_command_id": null,
+  "payload": {
+    "occurrence_id": "44444444-4444-4444-8444-444444444444",
+    "variant": "normal"
+  }
+}

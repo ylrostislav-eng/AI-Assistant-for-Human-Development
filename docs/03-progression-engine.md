@@ -1,6 +1,6 @@
 # 03. Progression Engine: полная спецификация v0.1
 
-**Канонические коэффициенты:** [progression-v0.1.json](contracts/progression-v0.1.json). Формулы — в этом документе. Расчётные проверки — [check_architecture.py](validation/check_architecture.py). Это модель игрового баланса, не измеритель интеллекта, здоровья или профессиональной квалификации.
+**Канонические коэффициенты:** [progression-v0.1.json](../packages/rules/progression/progression-v0.1.json). Формулы — в этом документе. Расчётные проверки — [check_architecture.py](validation/check_architecture.py). Это модель игрового баланса, не измеритель интеллекта, здоровья или профессиональной квалификации.
 
 ## 1. Ответственность и инварианты
 

@@ -9,6 +9,17 @@ export interface AppDependencies {
 }
 
 /**
+ * Единственный источник путей API. Проверка контрактов сверяет этот список с
+ * `packages/contracts/openapi.yaml` в обе стороны: описанный, но не
+ * реализованный маршрут и реализованный, но не описанный одинаково означают
+ * расхождение контракта с сервером, а замечают такое обычно потребители.
+ */
+export const API_ROUTES = [
+  { method: 'get', path: '/health' },
+  { method: 'get', path: '/health/ready' },
+] as const;
+
+/**
  * Фабрика приложения без побочных эффектов запуска: тесты поднимают тот же
  * экземпляр через inject, поэтому проверяется реальный роутинг, а не копия
  * обработчика.
@@ -21,7 +32,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
 
   // Liveness: процесс жив и отвечает. Намеренно не трогает БД — иначе рестарт
   // приложения зависит от доступности базы и перезапуск лечит не то.
-  app.get('/health', () => {
+  app.get(API_ROUTES[0].path, () => {
     return {
       status: 'ok' as const,
       environment: deps.config.environment,
@@ -32,7 +43,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // Readiness: приложение готово обслуживать запросы, то есть БД отвечает.
   // При недоступной БД возвращается 503, а не 200 с текстом об ошибке:
   // балансировщик читает код, а не тело.
-  app.get('/health/ready', async (_request, reply) => {
+  app.get(API_ROUTES[1].path, async (_request, reply) => {
     try {
       await checkConnection(deps.database);
       return { status: 'ready' as const, database: 'up' as const };

@@ -10,7 +10,7 @@
 
 `/v1`, HTTPS, JSON, ISO 8601 instants с offset/Z, явная IANA zone. Auth: Bearer app access token. `X-Request-ID` для диагностики; command idempotency — поле `command_id`, при `Idempotency-Key` оно обязано совпадать.
 
-Команда имеет [JSON Schema envelope](contracts/command-envelope.schema.json):
+Команда имеет [JSON Schema envelope](../packages/contracts/schemas/command-envelope.schema.json):
 
 ```json
 {

@@ -1,0 +1,83 @@
+openapi: 3.1.0
+
+# Контракт HTTP API. Описаны только реализованные маршруты: описание того, чего
+# нет, читается как обещание и приводит к клиенту, написанному под
+# несуществующий сервер. Проверка contracts сверяет этот файл с маршрутами
+# приложения в обе стороны, поэтому новые endpoints добавляются сюда вместе с
+# кодом, а не после него.
+
+info:
+  title: Персональная ИИ-Система развития — API
+  version: 0.1.0
+  description: |
+    Состояние: реализованы только пробы состояния сервиса. Команды, цели,
+    задания и синхронизация появляются в P1-02 и далее; их схемы добавляются
+    в этот файл вместе с реализацией.
+
+servers:
+  - url: http://127.0.0.1:3000
+    description: Локальная разработка
+
+paths:
+  /health:
+    get:
+      summary: Проба живости
+      description: |
+        Отвечает, пока процесс жив. Намеренно не обращается к базе данных:
+        иначе перезапуск приложения зависел бы от доступности базы, и
+        перезапускали бы не то, что сломалось.
+      operationId: getHealth
+      responses:
+        '200':
+          description: Процесс отвечает
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, environment, uptimeSeconds]
+                properties:
+                  status:
+                    const: ok
+                  environment:
+                    type: string
+                    enum: [development, test, production]
+                  uptimeSeconds:
+                    type: integer
+                    minimum: 0
+
+  /health/ready:
+    get:
+      summary: Проба готовности
+      description: |
+        Проверяет доступность базы данных. При недоступной базе отвечает 503 и
+        не раскрывает причину: строка подключения и параметры сервера не
+        предназначены для внешнего клиента.
+      operationId: getHealthReady
+      responses:
+        '200':
+          description: База отвечает, запросы можно направлять
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, database]
+                properties:
+                  status:
+                    const: ready
+                  database:
+                    const: up
+        '503':
+          description: База недоступна
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [status, database]
+                properties:
+                  status:
+                    const: not_ready
+                  database:
+                    const: down

@@ -19,7 +19,12 @@ import re
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCS = ROOT / "docs"
-CONFIG = json.loads((DOCS / "contracts/progression-v0.1.json").read_text())
+# Контракты и коэффициенты переехали из docs/contracts в production-расположение
+# (P1-01). Двух канонических копий быть не должно, поэтому проверка читает
+# только новые пути.
+CONTRACT_SCHEMAS = ROOT / "packages/contracts/schemas"
+RULES = ROOT / "packages/rules/progression"
+CONFIG = json.loads((RULES / "progression-v0.1.json").read_text())
 
 
 def require(condition: bool, message: str) -> None:
@@ -119,9 +124,9 @@ def validate_documents() -> tuple[int, int, str]:
             target = target.split("#", 1)[0]
             require((path.parent / target).exists(), f"Broken local link: {path.name} -> {target}")
             link_count += 1
-    for path in sorted((DOCS / "contracts").glob("*.json")):
+    for path in sorted([*CONTRACT_SCHEMAS.glob("*.json"), *RULES.glob("*.json")]):
         json.loads(path.read_text())
-    tool = json.loads((DOCS / "contracts/complete-quest.tool.json").read_text())
+    tool = json.loads((CONTRACT_SCHEMAS / "complete-quest.tool.json").read_text())
     require(tool["strict"] is True, "Strict tool mode is required")
     strict_objects(tool["parameters"])
     require(not {"xp", "level", "rank", "user_id"} & set(tool["parameters"]["properties"]), "Forbidden tool fields")
