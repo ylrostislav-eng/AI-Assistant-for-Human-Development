@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run tests/unit",
     "test:integration": "vitest run tests/integration",
+    "test:spikes": "vitest run spikes",
     "migrate": "tsx src/shared/db/migrate.ts"
   },
   "dependencies": {
