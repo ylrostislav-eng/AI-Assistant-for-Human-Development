@@ -13,7 +13,6 @@
     "typecheck": "npm run typecheck --workspace services/backend",
     "test": "npm run test --workspace services/backend",
     "test:integration": "npm run test:integration --workspace services/backend",
-    "test:spikes": "npm run test:spikes --workspace services/backend",
     "test:shuffle": "npm run test:shuffle --workspace services/backend",
     "migrate": "npm run migrate --workspace services/backend",
     "dev": "npm run dev --workspace services/backend",
