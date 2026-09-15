@@ -1,6 +1,7 @@
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { createPool } from './shared/db/pool.ts';
+import { assertSafeDatabaseRole } from './shared/db/role-guard.ts';
 
 /**
  * Точка входа API. Worker запускается отдельным процессом (docs/01, раздел 1),
@@ -9,6 +10,11 @@ import { createPool } from './shared/db/pool.ts';
 async function main(): Promise<void> {
   const config = loadConfig();
   const database = createPool(config.database);
+
+  // До приёма запросов: под небезопасной ролью изоляция пользователей молча
+  // отсутствует, и обнаружилось бы это уже на данных.
+  await assertSafeDatabaseRole(database, config.environment);
+
   const app = createApp({ config, database });
 
   const shutdown = async (signal: string): Promise<void> => {

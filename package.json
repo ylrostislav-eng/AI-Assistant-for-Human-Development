@@ -15,6 +15,7 @@
     "test:integration": "npm run test:integration --workspace services/backend",
     "migrate": "npm run migrate --workspace services/backend",
     "dev": "npm run dev --workspace services/backend",
+    "start": "npm run start --workspace services/backend",
     "scan:secrets": "python3 scripts/scan_secrets.py"
   }
 }

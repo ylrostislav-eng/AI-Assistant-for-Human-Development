@@ -1,0 +1,46 @@
+# НАБРОСОК, НЕ ПРОВЕРЕН ЗАПУСКОМ. В среде, где он написан, не было демона
+# Docker. Перед использованием выполнить `docker compose up` и исправить
+# найденное; см. ops/README.md.
+#
+# Назначение — личная разработка по docs/09, раздел 7: API и PostgreSQL на
+# одной машине. Worker отдельным сервисом не описан: `src/worker.ts` ещё не
+# существует, он появляется в P1-03, и запись о несуществующем процессе
+# выглядела бы как готовая функция.
+
+services:
+  db:
+    image: postgres:18
+    environment:
+      POSTGRES_USER: system
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?задать в .env, пустое значение недопустимо}
+      POSTGRES_DB: system_dev
+    ports:
+      # Только localhost: порт базы не выставляется наружу даже в разработке.
+      - "127.0.0.1:5432:5432"
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U system -d system_dev"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  api:
+    build:
+      context: ..
+      dockerfile: ops/Dockerfile
+    environment:
+      NODE_ENV: development
+      HOST: 0.0.0.0
+      PORT: 3000
+      DATABASE_URL: postgres://system:${POSTGRES_PASSWORD:?}@db:5432/system_dev
+    ports:
+      - "127.0.0.1:3000:3000"
+    depends_on:
+      db:
+        # Без условия service_healthy API стартует раньше готовности базы:
+        # readiness будет отдавать 503, и причина выглядит как ошибка кода.
+        condition: service_healthy
+
+volumes:
+  db-data:
