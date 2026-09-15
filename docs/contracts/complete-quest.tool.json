@@ -1,0 +1,64 @@
+{
+  "type": "function",
+  "name": "complete_quest",
+  "description": "Записать выполнение выбранного квеста по явному намерению пользователя. Backend проверяет критерий, права и версию, сам рассчитывает награду. Не выдумывать длительность или результат.",
+  "strict": true,
+  "parameters": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "occurrence_id": {
+        "type": "string",
+        "description": "ID доступной текущему пользователю occurrence из данных приложения."
+      },
+      "expected_version": {
+        "type": "integer",
+        "description": "Актуальная версия occurrence из прочитанного состояния."
+      },
+      "actual_duration_seconds": {
+        "type": [
+          "integer",
+          "null"
+        ],
+        "description": "Фактическое активное время со слов пользователя или timer; null если не установлено."
+      },
+      "actual_amount": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "Фактический измеримый объём в единицах квеста, десятичная строка; null для purely timed task."
+      },
+      "variant": {
+        "type": "string",
+        "enum": [
+          "normal",
+          "minimum"
+        ]
+      },
+      "completed_at": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "ISO 8601 instant с timezone offset; null если пользователь не уточнил и допустимо серверное текущее время."
+      },
+      "evidence_id": {
+        "type": [
+          "string",
+          "null"
+        ],
+        "description": "ID существующего доступного подтверждения; null для self-report."
+      }
+    },
+    "required": [
+      "occurrence_id",
+      "expected_version",
+      "actual_duration_seconds",
+      "actual_amount",
+      "variant",
+      "completed_at",
+      "evidence_id"
+    ]
+  }
+}

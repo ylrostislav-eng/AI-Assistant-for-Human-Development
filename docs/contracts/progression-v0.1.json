@@ -1,0 +1,275 @@
+{
+  "version": "progression-0.1",
+  "status": "architecture_draft",
+  "xp_unit": "milli_xp",
+  "milli_xp_per_xp": 1000,
+  "initial": {
+    "lifetime_xp": 0,
+    "skill_xp": 0,
+    "stat_xp": 0,
+    "form": 0,
+    "rank": "F"
+  },
+  "reward": {
+    "base_xp_per_minute": 0.5,
+    "ad_hoc_max_credited_minutes": 120,
+    "family_bands": [
+      {
+        "end_minutes": 60,
+        "multiplier": 1
+      },
+      {
+        "end_minutes": 120,
+        "multiplier": 0.5
+      },
+      {
+        "end_minutes": 180,
+        "multiplier": 0.25
+      },
+      {
+        "end_minutes": null,
+        "multiplier": 0
+      }
+    ],
+    "global_bands": [
+      {
+        "end_minutes": 120,
+        "multiplier": 1
+      },
+      {
+        "end_minutes": 240,
+        "multiplier": 0.5
+      },
+      {
+        "end_minutes": null,
+        "multiplier": 0
+      }
+    ],
+    "difficulty": {
+      "E": 0.5,
+      "D": 0.75,
+      "C": 1,
+      "B": 1.2,
+      "A": 1.4,
+      "S": 1.6
+    },
+    "difficulty_policy": {
+      "minimum_stage": 0,
+      "maximum_stage": 5,
+      "delta_ratings": [
+        {"maximum_delta": -2, "rating": "E"},
+        {"maximum_delta": -1, "rating": "D"},
+        {"maximum_delta": 0, "rating": "C"},
+        {"maximum_delta": 1, "rating": "B"},
+        {"maximum_delta": 2, "rating": "A"},
+        {"maximum_delta": null, "rating": "S"}
+      ],
+      "unreviewed_rubric_max_multiplier": 1,
+      "requires_approved_rubric_and_prerequisites": true
+    },
+    "quality": {
+      "incomplete_quality": 0.7,
+      "standard": 1,
+      "rubric_result": 1.05
+    },
+    "evidence": {
+      "self": 1,
+      "timer": 1.02,
+      "device": 1.05,
+      "result": 1.05,
+      "milestone": 1.05
+    },
+    "consistency": {
+      "step": 0.02,
+      "days_per_step": 3,
+      "max_steps": 4,
+      "window_eligible_days": 14
+    },
+    "novelty_mvp": 1,
+    "novelty_future_max": 1.05,
+    "routine": {
+      "per_family_day_xp": 1,
+      "total_day_xp": 5
+    },
+    "daily_cap_xp": 180,
+    "rolling_24h_cap_xp": 180,
+    "milestone": {
+      "award_xp": 20,
+      "max_awards_trailing_7_user_days": 2
+    }
+  },
+  "levels": {
+    "lifetime": {
+      "linear_mxp": 20000,
+      "quadratic_mxp": 8000,
+      "cubic_mxp": 250
+    },
+    "skill": {
+      "linear_mxp": 30000,
+      "quadratic_mxp": 12000,
+      "cubic_mxp": 400
+    },
+    "skill_gates": [
+      {
+        "level": 10,
+        "checkpoints": 1
+      },
+      {
+        "level": 20,
+        "checkpoints": 2
+      },
+      {
+        "level": 40,
+        "checkpoints": 4
+      },
+      {
+        "level": 60,
+        "checkpoints": 6
+      },
+      {
+        "level": 80,
+        "checkpoints": 8
+      },
+      {
+        "level": 100,
+        "checkpoints": 10
+      }
+    ]
+  },
+  "allocation": {
+    "max_direct_skills": 3,
+    "total_basis_points": 10000,
+    "parent_mode": "aggregate_unique_descendant_allocations"
+  },
+  "stats": {
+    "codes": [
+      "BODY",
+      "ENDURANCE",
+      "MIND",
+      "FOCUS",
+      "DISCIPLINE",
+      "SOCIAL"
+    ],
+    "log_scale": 5,
+    "xp_reference": 100,
+    "display_decimal_places": 2
+  },
+  "form": {
+    "window_effective_days": 7,
+    "half_life_days": {
+      "physical": 10,
+      "learning_social": 21,
+      "stat": 14
+    },
+    "minimum_weekly_target_minutes": 10,
+    "initial": 0,
+    "protection_days": 14,
+    "protection_extendable": true,
+    "mastery_decay": 0
+  },
+  "current_power": {
+    "form_weight": 0.6,
+    "activity_weight": 0.15,
+    "adherence_weight": 0.15,
+    "regularity_weight": 0.1,
+    "performance_window_effective_days": 14,
+    "empty_denominator_policy": "carry_last_component_or_neutral_if_never_observed",
+    "current_level_floor_ratio": 0.4,
+    "current_level_power_ratio": 0.6
+  },
+  "ranks": [
+    {
+      "rank": "F",
+      "lifetime_level": 0,
+      "current_level": 0,
+      "power": 0,
+      "active_days": 0,
+      "checkpoints": 0
+    },
+    {
+      "rank": "E",
+      "lifetime_level": 5,
+      "current_level": 4,
+      "power": 0.45,
+      "active_days": 5,
+      "checkpoints": 0
+    },
+    {
+      "rank": "D",
+      "lifetime_level": 10,
+      "current_level": 8,
+      "power": 0.5,
+      "active_days": 20,
+      "checkpoints": 1
+    },
+    {
+      "rank": "C",
+      "lifetime_level": 20,
+      "current_level": 16,
+      "power": 0.55,
+      "active_days": 60,
+      "checkpoints": 3
+    },
+    {
+      "rank": "B",
+      "lifetime_level": 35,
+      "current_level": 28,
+      "power": 0.6,
+      "active_days": 150,
+      "checkpoints": 5
+    },
+    {
+      "rank": "A",
+      "lifetime_level": 50,
+      "current_level": 40,
+      "power": 0.65,
+      "active_days": 300,
+      "checkpoints": 8
+    },
+    {
+      "rank": "S",
+      "lifetime_level": 70,
+      "current_level": 56,
+      "power": 0.7,
+      "active_days": 600,
+      "checkpoints": 12
+    }
+  ],
+  "rank_hysteresis": {
+    "promotion_effective_days": 7,
+    "demotion_effective_days": 14,
+    "exit_power_margin": 0.1,
+    "exit_current_level_margin": 2
+  },
+  "scheduling_defaults": {
+    "lookahead_user_days": 14,
+    "availability_fill_ratio": 0.7,
+    "slot_minutes": 5,
+    "context_switch_buffer_minutes": 5,
+    "max_priority_goals_per_day": 3
+  },
+  "recovery": {
+    "max_debt_units": 3,
+    "max_extra_quests_per_day": 1,
+    "max_extra_load_ratio": 0.15,
+    "max_extra_minutes": 20,
+    "expiry_user_days": 7,
+    "recursive_debt": false
+  },
+  "calibration": {
+    "daily_xp_scenarios": [
+      30,
+      70,
+      120
+    ],
+    "report_levels": [
+      1,
+      5,
+      10,
+      20,
+      40,
+      60,
+      100
+    ]
+  }
+}

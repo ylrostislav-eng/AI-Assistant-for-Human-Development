@@ -1,0 +1,64 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "CommandEnvelopeDraftV1",
+  "description": "Transport envelope only. The server MUST also validate payload against the closed schema registered for kind. Not a production OpenAPI contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "schema_version": {
+      "const": 1
+    },
+    "command_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "device_id": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "kind": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "aggregate_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "expected_version": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0
+    },
+    "client_created_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "depends_on_command_id": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "format": "uuid"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "required": [
+    "schema_version",
+    "command_id",
+    "device_id",
+    "kind",
+    "aggregate_id",
+    "expected_version",
+    "client_created_at",
+    "depends_on_command_id",
+    "payload"
+  ]
+}
