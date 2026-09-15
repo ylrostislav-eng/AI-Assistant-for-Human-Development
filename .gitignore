@@ -1,0 +1,14 @@
+node_modules/
+dist/
+*.log
+
+# Секреты и локальные настройки не попадают в git (AGENTS.md).
+.env
+.env.*
+!.env.example
+
+# Локальные кластеры БД и артефакты проверок.
+.pgdata/
+coverage/
+
+.DS_Store

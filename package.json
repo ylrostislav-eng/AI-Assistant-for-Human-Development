@@ -1,0 +1,19 @@
+{
+  "name": "personal-development-system",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Персональная ИИ-Система развития: монорепозиторий backend, контрактов и правил",
+  "workspaces": [
+    "services/backend"
+  ],
+  "engines": {
+    "node": ">=22.22.0 <23.0.0"
+  },
+  "scripts": {
+    "typecheck": "npm run typecheck --workspace services/backend",
+    "test": "npm run test --workspace services/backend",
+    "test:integration": "npm run test:integration --workspace services/backend",
+    "migrate": "npm run migrate --workspace services/backend",
+    "dev": "npm run dev --workspace services/backend"
+  }
+}
