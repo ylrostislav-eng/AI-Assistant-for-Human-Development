@@ -5,6 +5,7 @@ import { DEFAULT_MIGRATIONS_DIR, runMigrations } from '../../src/shared/db/migra
 import { createPool, type Database } from '../../src/shared/db/pool.ts';
 import { findTablesWithoutRls, readTableRlsState } from '../../src/shared/db/rls-audit.ts';
 import { withTenantTransaction } from '../../src/shared/db/tenant.ts';
+import { resetSchema } from '../helpers/reset-schema.ts';
 
 /**
  * Проверки миграции 001: изоляция, составные внешние ключи и ограничения
@@ -37,8 +38,7 @@ beforeAll(async () => {
 
   // Состояние базы после других файлов проверок неизвестно, поэтому схема
   // приводится к чистому виду и миграции применяются заново.
-  await ownerDb.query(`DROP TABLE IF EXISTS ${MIGRATED_TABLES.join(', ')} CASCADE`);
-  await ownerDb.query('DROP TABLE IF EXISTS schema_migrations');
+  await resetSchema(ownerDb);
 
   const result = await runMigrations(ownerDb, DEFAULT_MIGRATIONS_DIR);
   expect(result.applied).toContain('001_identity_profile.sql');
@@ -68,8 +68,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await runtimeDb.end();
-  await ownerDb.query(`DROP TABLE IF EXISTS ${MIGRATED_TABLES.join(', ')} CASCADE`);
-  await ownerDb.query('DROP TABLE IF EXISTS schema_migrations');
+  await resetSchema(ownerDb);
   await ownerDb.end();
 });
 

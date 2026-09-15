@@ -5,6 +5,7 @@ import { DEFAULT_MIGRATIONS_DIR, runMigrations } from '../../src/shared/db/migra
 import { createPool, type Database } from '../../src/shared/db/pool.ts';
 import { findTablesWithoutRls } from '../../src/shared/db/rls-audit.ts';
 import { withTenantTransaction } from '../../src/shared/db/tenant.ts';
+import { resetSchema } from '../helpers/reset-schema.ts';
 
 /**
  * Проверки миграции 002: связи слоя целей и изоляция.
@@ -18,20 +19,6 @@ const RUNTIME_ROLE = 'app_runtime';
 const USER_A = '77777777-7777-4777-8777-777777777777';
 const USER_B = '88888888-8888-4888-8888-888888888888';
 
-const ALL_TABLES = [
-  'goal_dependencies',
-  'projects',
-  'milestones',
-  'goal_metrics',
-  'goals',
-  'sessions',
-  'devices',
-  'consent_records',
-  'user_preferences',
-  'user_profiles',
-  'users',
-];
-
 let ownerDb: Database;
 let runtimeDb: Database;
 let goalA: string;
@@ -41,8 +28,7 @@ beforeAll(async () => {
   const config = loadConfig();
   ownerDb = createPool(config.database);
 
-  await ownerDb.query(`DROP TABLE IF EXISTS ${ALL_TABLES.join(', ')} CASCADE`);
-  await ownerDb.query('DROP TABLE IF EXISTS schema_migrations');
+  await resetSchema(ownerDb);
   const applied = await runMigrations(ownerDb, DEFAULT_MIGRATIONS_DIR);
   expect(applied.applied).toContain('002_goals.sql');
 
@@ -68,8 +54,7 @@ beforeAll(async () => {
 
 afterAll(async () => {
   await runtimeDb.end();
-  await ownerDb.query(`DROP TABLE IF EXISTS ${ALL_TABLES.join(', ')} CASCADE`);
-  await ownerDb.query('DROP TABLE IF EXISTS schema_migrations');
+  await resetSchema(ownerDb);
   await ownerDb.end();
 });
 
