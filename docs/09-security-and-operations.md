@@ -29,6 +29,8 @@ Dev-only seed identity разрешена исключительно в лока
 
 SQL runtime-role не owner/superuser/BYPASSRLS. Tenant setting задаётся transaction-local, не протекает между pooled connections. Worker обрабатывает explicit user job с теми же checks; административные операции отдельно, audit обязательный.
 
+Этот механизм проверен на прототипе: [изоляция арендаторов](security-prototype-tenant-isolation.md). Проверка подтверждает RLS с `FORCE`, запрет по умолчанию и отсутствие протечки контекста между транзакциями; identity token, worker и доменные таблицы остаются непроверенными.
+
 ## 3. Секреты и шифрование
 
 - Backend OpenAI/APNs/Apple client secrets и database credentials — secret manager/environment injection; не mobile bundle/git/логи.
