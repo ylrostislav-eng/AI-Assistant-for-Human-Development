@@ -105,7 +105,11 @@ async function createOccurrence(
 describe('R1: версия и цель берутся из конверта', () => {
   it('устаревшая версия в конверте отклоняется', async () => {
     const occurrence = await createOccurrence('r1-версия');
-    await send('start_quest', { occurrence_id: occurrence.id });
+    await send(
+      'start_quest',
+      {},
+      { aggregateId: occurrence.id, expectedVersion: occurrence.version },
+    );
 
     // Клиент собирает конверт по контракту: версия и цель — поля верхнего
     // уровня. Раньше обработчик читал их только из payload, и канонические
@@ -141,7 +145,7 @@ describe('R1: версия и цель берутся из конверта', ()
     const response = await send(
       'complete_quest',
       { occurrence_id: first.id },
-      { aggregateId: second.id },
+      { aggregateId: second.id, expectedVersion: second.version },
     );
 
     expect(response.statusCode).toBe(400);
@@ -156,8 +160,8 @@ describe('R2: повтор распознаётся вместе с видом �
 
     const started = await send(
       'start_quest',
-      { occurrence_id: occurrence.id },
-      { commandId },
+      {},
+      { commandId, aggregateId: occurrence.id, expectedVersion: occurrence.version },
     );
     expect(started.statusCode).toBe(200);
 
@@ -166,8 +170,8 @@ describe('R2: повтор распознаётся вместе с видом �
     // задание, которое всего лишь запущено.
     const wrongKind = await send(
       'complete_quest',
-      { occurrence_id: occurrence.id },
-      { commandId },
+      {},
+      { commandId, aggregateId: occurrence.id, expectedVersion: occurrence.version },
     );
 
     expect(wrongKind.statusCode).toBe(409);
@@ -179,8 +183,12 @@ describe('R2: повтор распознаётся вместе с видом �
     const second = await createOccurrence('r2-цель-2');
     const commandId = randomUUID();
 
-    await send('start_quest', { occurrence_id: first.id }, { commandId });
-    const other = await send('start_quest', { occurrence_id: second.id }, { commandId });
+    await send('start_quest', {}, { commandId, aggregateId: first.id, expectedVersion: first.version });
+    const other = await send(
+      'start_quest',
+      {},
+      { commandId, aggregateId: second.id, expectedVersion: second.version },
+    );
 
     expect(other.statusCode).toBe(409);
   });
@@ -189,8 +197,9 @@ describe('R2: повтор распознаётся вместе с видом �
     const occurrence = await createOccurrence('r2-честный-повтор');
     const commandId = randomUUID();
 
-    const first = await send('start_quest', { occurrence_id: occurrence.id }, { commandId });
-    const repeat = await send('start_quest', { occurrence_id: occurrence.id }, { commandId });
+    const target = { commandId, aggregateId: occurrence.id, expectedVersion: occurrence.version };
+    const first = await send('start_quest', {}, target);
+    const repeat = await send('start_quest', {}, target);
 
     // Обычный повтор при обрыве сети обязан работать по-прежнему.
     expect(repeat.statusCode).toBe(200);
@@ -219,10 +228,11 @@ describe('R6: закрытые схемы нагрузки', () => {
     // реализована, сервер не может его сохранить; молчаливый приём означал бы,
     // что человек считает объём записанным, а восстановить его через неделю
     // будет неоткуда.
-    const response = await send('complete_quest', {
-      occurrence_id: occurrence.id,
-      actual_duration_seconds: 1800,
-    });
+    const response = await send(
+      'complete_quest',
+      { actual_duration_seconds: 1800 },
+      { aggregateId: occurrence.id, expectedVersion: occurrence.version },
+    );
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'invalid_payload' });
@@ -265,10 +275,11 @@ describe('R6: закрытые схемы нагрузки', () => {
 
     // Шаблон минимума не описывает. Приняв variant=minimum, сервер выдал бы
     // меньшую награду за объём, о котором ничего не известно.
-    const response = await send('complete_quest', {
-      occurrence_id: occurrence.id,
-      variant: 'minimum',
-    });
+    const response = await send(
+      'complete_quest',
+      { variant: 'minimum' },
+      { aggregateId: occurrence.id, expectedVersion: occurrence.version },
+    );
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'invalid_payload' });
@@ -279,10 +290,11 @@ describe('R6: закрытые схемы нагрузки', () => {
       minimum_spec: { duration_seconds: 300, unit: 'seconds', success_rule: 'duration' },
     });
 
-    const response = await send('complete_quest', {
-      occurrence_id: occurrence.id,
-      variant: 'minimum',
-    });
+    const response = await send(
+      'complete_quest',
+      { variant: 'minimum' },
+      { aggregateId: occurrence.id, expectedVersion: occurrence.version },
+    );
 
     // Отрицательный контроль к предыдущей проверке: запрет не должен ломать
     // законный минимум.
@@ -299,11 +311,63 @@ describe('заявленная зависимость не игнорирует�
     // нарушить порядок, который клиент считает гарантированным.
     const response = await send(
       'start_quest',
-      { occurrence_id: occurrence.id },
-      { dependsOnCommandId: randomUUID() },
+      {},
+      {
+        aggregateId: occurrence.id,
+        expectedVersion: occurrence.version,
+        dependsOnCommandId: randomUUID(),
+      },
     );
 
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'unsupported_dependency' });
+  });
+});
+
+describe('политика версии', () => {
+  it('изменяющая команда без версии отклоняется', async () => {
+    const occurrence = await createOccurrence('политика-без-версии');
+
+    // «Отметить выполненным» без версии означает «выполнено, что бы там сейчас
+    // ни было»: команда по экрану двухчасовой давности применилась бы к
+    // состоянию, которого человек не видел.
+    const response = await send('start_quest', { occurrence_id: occurrence.id });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'version_required' });
+  });
+
+  it('создающая команда с версией отклоняется', async () => {
+    const response = await send(
+      'create_goal',
+      { title: 'Цель с версией', start_date: '2026-09-01' },
+      { expectedVersion: 0 },
+    );
+
+    // У создаваемого объекта нет предыдущей версии; принятое и не проверенное
+    // поле создаёт у клиента уверенность в защите, которой нет.
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'version_required' });
+  });
+
+  it('создающая команда с целью конверта отклоняется', async () => {
+    const response = await send(
+      'create_goal',
+      { title: 'Цель с целью', start_date: '2026-09-01' },
+      { aggregateId: randomUUID() },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'target_mismatch' });
+  });
+
+  it('обычное создание по-прежнему проходит', async () => {
+    // Отрицательный контроль: политика не должна ломать создание.
+    const response = await send('create_goal', {
+      title: 'Обычная цель',
+      start_date: '2026-09-01',
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 });

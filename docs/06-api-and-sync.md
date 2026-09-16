@@ -100,7 +100,8 @@ Resource routes для mutations — только удобные adapters над
 
 Порядок:
 
-1. Validate access token, envelope/schema, request size. Вывести user_id из token.
+1. Validate access token, envelope/schema, request size. Вывести user_id из token. Нагрузка проверяется закрытой схемой своего вида (`packages/contracts/schemas/commands/`): схема конверта описывает только транспорт, и без второй проверки неизвестное поле терялось молча. Неподдержанная зависимость (`depends_on_command_id`) отклоняется явно, а не игнорируется.
+1a. Применить политику цели и версии. Изменяющая команда обязана назвать `aggregate_id` и `expected_version`; без версии «отметить выполненным» означает «выполнено, что бы там сейчас ни было». Создающая команда присылает оба поля пустыми: предыдущей версии у неё нет, а собственный идентификатор объекта, если клиент его выбирает, лежит в нагрузке. Дубликаты цели и версии в нагрузке приняты только при совпадении с конвертом. Фоновым исполнителям, когда они появятся, нужна отдельная явно описанная политика, а не исключение из этой.
 2. Begin; установить transaction-local tenant context. Lock `user_change_counters` row для этого user.
 3. Найти `(user_id, command_id)`. Hash включает schema_version, kind, aggregate_id, expected_version, dependency и canonical payload; версия алгоритма сохранена. Если hash совпадает, вернуть сохранённый receipt без повторной версии/XP. Если hash другой — reject.
 4. Проверить текущие permissions, target ownership, expected_version, semantic duplicates и domain invariants.

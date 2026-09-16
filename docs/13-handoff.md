@@ -15,7 +15,7 @@
 | Toolchain | npm workspaces, pins/lockfile, TS/Fastify/pg, test tooling | Web scaffold/lock additions после compatibility smoke |
 | DB | Миграции 001–008, identity/profile/goals/quests/calendar/sync/jobs, RLS/roles | Activity/ledger и новые Telegram tables по задачам |
 | Identity | Dev synthetic login, opaque access/refresh, rotation/logout, закрытый доступ | Signed Telegram login + external identities + installation binding |
-| Commands | Bus, receipts, user counters, batches, HTTP registry | T-00a: semantic hash, version/target/payload checks; расширения domain |
+| Commands | Bus, receipts, user counters, batches, own-key registry, семантический hash, каноническая цель/версия, закрытые схемы нагрузки (**T-00a выполнен**) | Расширения domain; политика фоновых исполнителей |
 | Worker | Outbox/dispatch/jobs/lease/retry entrypoint | T-00b fencing/attempts; реальные domain/Telegram handlers |
 | Quests | Create template/materialize/start/complete/partial/cancel states | Сохранение Activity/объёма/вариантов, timer/undo; сейчас completion status-only |
 | Time | Pure CalendarMath, ensureUserDay, unit/integration | T-00c/d DST и policy transition; Scheduler/day-close/reminders |
@@ -29,15 +29,27 @@
 
 [Полный отчёт R1–R7](15-backend-review.md) с воспроизведением, файлами и acceptance tests:
 
-- R1: top-level expected_version/aggregate теряются при dispatch.
-- R2: hash команды не учитывает kind, возвращается receipt другой операции.
+- ~~R1: top-level expected_version/aggregate теряются при dispatch.~~ Исправлено в T-00a (`453cf3f`).
+- ~~R2: hash команды не учитывает kind, возвращается receipt другой операции.~~ Исправлено в T-00a (`453cf3f`), миграция 009.
 - R3: нет lease ownership CAS; expired lease может превысить max attempts.
 - R4: 8 из 12 проб DST gap по 5 минут дают неверную первую допустимую границу.
 - R5: смена boundary 04:00→00:00 создаёт overlapping user days.
-- R6: minimum без spec/actual Activity принимается; payload schemas неполны.
+- R6: **частично исправлено в T-00a** (`a2b2345` и далее): закрытые схемы нагрузки по видам, own-key registry, minimum только по принятой спецификации. Осталось из P1-06: Activity root с фактическим объёмом/длительностью/временем, source/variant snapshot, correction path.
 - R7: raw error logging и общий catch refresh требуют исправления до реальных данных.
 
 **Исправления production-кода не выполнены в T-DOC-01.** Проходящий baseline не является подтверждением этих новых сценариев. Не подключать реальные награды и imports в обход исправлений.
+
+### 3.1 Что сделано в T-00a
+
+Три коммита, каждый с живой проверкой на PostgreSQL 18.6.
+
+1. `453cf3f` — канонические цель и версия из конверта, семантический хеш повтора (схема, вид, цель, версия, зависимость, нагрузка), миграция 009 с `kind`/`hash_version`. Квитанции прежней схемы (`hash_version = 1`) не угадываются: их повтор отклоняется как конфликт, потому что доказать тождество нечем.
+2. `a2b2345` — закрытые схемы нагрузки по видам команд в `packages/contracts/schemas/commands/`, сверка реестра со схемами в обе стороны, minimum только по принятой спецификации, явный отказ на неподдержанный `depends_on_command_id`.
+3. Политика версии: изменяющая команда обязана назвать цель и версию, создающая присылает оба поля пустыми. Это меняет контракт клиента — кнопка бота обязана нести версию в action token (docs/14, раздел про callback data; таблица `telegram_action_tokens` в docs/02 это уже предполагает).
+
+Регрессионные сценарии написаны **до** исправления и проверены отрицательным контролем: с выключенными проверками падают именно они, законные пути продолжают проходить.
+
+Не сделано в T-00a: R3, R4, R5, R7 и Activity-часть R6 — по ним код не менялся.
 
 ## 4. Проверки T-DOC-01
 

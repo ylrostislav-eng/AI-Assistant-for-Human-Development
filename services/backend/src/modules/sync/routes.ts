@@ -43,7 +43,10 @@ import type { Database } from '../../shared/db/pool.ts';
  */
 
 interface CommandDefinition {
-  /** Поле нагрузки, содержащее цель команды; отсутствует у создающих команд. */
+  /**
+   * Поле нагрузки, содержащее цель команды. Есть только у изменяющих команд;
+   * его наличие и означает «эта команда меняет существующий объект».
+   */
   readonly targetField?: string;
   readonly build: (request: CommandRequest) => CommandHandler;
 }
@@ -100,6 +103,7 @@ export function commandKinds(): readonly string[] {
 }
 
 class TargetMismatchError extends Error {}
+class VersionPolicyError extends Error {}
 
 /**
  * Согласование цели конверта и цели нагрузки. Два разных идентификатора в одном
@@ -139,6 +143,46 @@ function resolveExpectedVersion(envelope: CommandEnvelope): number | null {
   return envelope.expected_version;
 }
 
+/**
+ * Политика цели и версии, разная для создающих и изменяющих команд.
+ *
+ * Изменяющая команда обязана назвать версию, от которой клиент отталкивался.
+ * Без неё «отметить выполненным» означает «выполнено, что бы там сейчас ни
+ * было»: команда, отправленная по экрану двухчасовой давности, применится к
+ * состоянию, которого человек не видел. Оптимистичная блокировка, которую
+ * можно не присылать, защищает только аккуратных клиентов.
+ *
+ * Создающей команде версию присылать неоткуда, и цель конверта ей тоже не
+ * нужна: собственный идентификатор объекта, если клиент его выбирает, лежит в
+ * нагрузке. Молчаливое игнорирование обоих полей вернуло бы ровно ту тишину,
+ * из-за которой версия не проверялась (R1 в docs/15-backend-review.md).
+ *
+ * Фоновые исполнители собственных команд пока не отправляют; когда появятся,
+ * им нужна отдельная явно описанная политика, а не исключение из этой.
+ */
+function assertVersionPolicy(command: CommandRequest, definition: CommandDefinition): void {
+  const mutates = definition.targetField !== undefined;
+
+  if (!mutates) {
+    if (command.targetId !== null) {
+      throw new TargetMismatchError(
+        'Создающая команда не изменяет существующий объект: aggregate_id должен быть пустым',
+      );
+    }
+    if (command.expectedVersion !== null) {
+      throw new VersionPolicyError('У создающей команды нет предыдущей версии');
+    }
+    return;
+  }
+
+  if (command.targetId === null) {
+    throw new InvalidCommandPayloadError('Не указан изменяемый объект');
+  }
+  if (command.expectedVersion === null) {
+    throw new VersionPolicyError('Изменяющая команда обязана назвать ожидаемую версию объекта');
+  }
+}
+
 export function registerCommandRoutes(app: FastifyInstance, database: Database): void {
   app.post('/commands', { schema: { body: commandEnvelopeSchema } }, async (request, reply) => {
     const userId = request.userId;
@@ -174,10 +218,14 @@ export function registerCommandRoutes(app: FastifyInstance, database: Database):
         dependsOnCommandId: envelope.depends_on_command_id,
         payload: envelope.payload,
       };
+      assertVersionPolicy(command, definition);
       handler = definition.build(command);
     } catch (error) {
       if (error instanceof TargetMismatchError) {
         return reply.code(400).send({ error: 'target_mismatch', detail: error.message });
+      }
+      if (error instanceof VersionPolicyError) {
+        return reply.code(400).send({ error: 'version_required', detail: error.message });
       }
       if (error instanceof PayloadValidationError || error instanceof InvalidCommandPayloadError) {
         return reply.code(400).send({ error: 'invalid_payload', detail: error.message });
