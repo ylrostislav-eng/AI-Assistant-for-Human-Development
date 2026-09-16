@@ -41,13 +41,15 @@ T-04 hosting можно подготовить раньше для synthetic dev
 
 | ID | Scope / файлы | Проверки и готовность |
 |---|---|---|
-| T-00a | `shared/commands`, `modules/sync/routes`, quest parsers, contracts | Hash учитывает kind/семантику; top-level version/aggregate проверяются; closed payload schemas; неизвестные/prototype keys отвергаются; owner/device/dependencies не игнорируются. Все кейсы R1/R2/R6 из аудита |
-| T-00b | `modules/sync/worker`, новая migration lease ownership, worker tests | Claim только свободной capacity; lease token CAS; late A не завершает B; expiry/max attempts/dead-letter/renewal; два workers |
-| T-00c | `shared/time/user-day`, unit fixtures | Все минуты DST gap → первая допустимая граница по policy; fold; 30-minute change; non-hour zones; точность offset |
-| T-00d | `modules/scheduling/user-days`, policy epochs/migration | Смена boundary/timezone применяется в определённый момент; существующий интервал не раздваивается; concurrent changes; один credited bucket |
-| T-00e | `app.ts`, `worker.ts`, error translation, log tests | Raw PG/provider errors не раскрывают payload/credentials; инфраструктурная ошибка refresh не маскируется под неверный token |
+| T-00a ✔ | `shared/commands`, `modules/sync/routes`, quest parsers, contracts | Hash учитывает kind/семантику; top-level version/aggregate проверяются; closed payload schemas; неизвестные/prototype keys отвергаются; owner/device/dependencies не игнорируются. Все кейсы R1/R2/R6 из аудита |
+| T-00b ✔ | `modules/sync/worker`, миграция 010 lease ownership, worker tests | Claim только свободной capacity; lease token CAS; late A не завершает B; expiry/max attempts/dead-letter/renewal; два workers |
+| T-00c ✔ | `shared/time/user-day`, unit fixtures | Все минуты DST gap → первая допустимая граница по policy; fold; 30-minute change; non-hour zones; точность offset |
+| T-00d ✔ | `modules/scheduling/user-days`, миграция 011 | Смена boundary/timezone применяется в определённый момент; существующий интервал не раздваивается; concurrent changes; один credited bucket |
+| T-00e ✔ | `app.ts`, `worker.ts`, `shared/logging`, error translation, log tests | Raw PG/provider errors не раскрывают payload/credentials; инфраструктурная ошибка refresh не маскируется под неверный token |
 
-T-00a — **следующая небольшая задача**. T-00b–e закрываются отдельно; не объявлять весь сервер готовым по исправлению одной строки. Старые миграции не переписывать; upgrade существующей БД и old receipts требуют явной compatibility policy.
+**T-00a–e выполнены** (коммиты `453cf3f`, `a2b2345`, `25146a0`, `9b4c5d8`, `caa24d1`, `e15c349`, `a1e3903`; миграции 009–011). Подробности и отрицательные контроли — в [handoff](13-handoff.md), раздел 3. Это не значит, что сервер готов: остаётся Activity-часть R6 (P1-06), а Telegram-клиента, чтения и ledger нет вовсе. Старые миграции не переписывались; политика для прежних квитанций (`hash_version = 1`) — явный отказ, а не догадка.
+
+> Следующая задача по порядку аудита — Telegram foundation (T-01, затем T-06), а Activity path закрывается до реального дневного учёта. T-01 требует токена тестового бота от владельца.
 
 ## 4. Telegram foundation и первая вертикаль
 
