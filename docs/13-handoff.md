@@ -21,7 +21,7 @@
 | Time | Pure CalendarMath, точное смещение пояса, разрыв и наложение по каждой минуте (**T-00c**), непрерывная цепочка дней без пересечений (**T-00d**) | Scheduler/day-close/reminders |
 | Клиент/бот | Архитектура и контракты; вход через Telegram и чтения `/bootstrap` + `/sync/pull` (**T-01, T-06**) | Mini App, бот, webhook |
 | AI/RPG | Документация, JSON rules, arithmetic sanity | Production AI/Progression/ledger/Recovery/reviews отсутствуют |
-| Operations | Локальный DB script, непроверенные Docker/Compose sketches | HTTPS hosting, bot setup, secrets, backup/restore, реальный пилот |
+| Operations | Локальный DB script; **развёрнуто на Railway**: PostgreSQL 18 с томом, API из `ops/Dockerfile`, свой https-адрес, роли и 14 миграций в боевой базе | Bot setup, worker как отдельный сервис, backup/restore, реальный пилот |
 
 Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `POST /auth/telegram`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`, `GET /bootstrap`, `GET /sync/pull`. [OpenAPI](../packages/contracts/openapi.yaml) отражает их; будущие маршруты в docs/06 пока не существуют. `apps/miniapp` пока не создан.
 
@@ -221,6 +221,35 @@ ends_at))`: прикладное правило может обойти буду
 Не сделано: привязка installation (T-05), таймер, отмена выполнения (undo) с компенсирующими записями,
 evidence, delta частичного к полному при награде, связь факта с
 пользовательским днём (`credited_day_id`). Награды нет вовсе — это P3-02.
+
+### 3.9 Развёртывание на Railway (T-04, часть)
+
+Проект `ai-assistant-system`, окружение `production`. Сервисы `Postgres`
+(образ `postgres-ssl:18`, том 5 ГБ, регион sfo) и `api` (сборка из
+`ops/Dockerfile`, ветка `main`). Адрес `api-production-1b80.up.railway.app` —
+он же закрывает вопрос с доменом для Telegram: покупать ничего не понадобилось.
+
+Роли `app_runtime` и `app_worker` созданы вручную (managed PostgreSQL не даёт
+мигратору их заводить), 14 миграций применены владельцем таблиц. Секреты
+`APP_RUNTIME_PASSWORD` и `TELEGRAM_BOT_TOKEN` заданы в панели и в репозиторий не
+попадают. Порядок проверен: роли до миграций, иначе миграция останавливается —
+ей некому выдавать права.
+
+**Живая проверка, а не рассуждение по коду:**
+
+- `GET /health` → `{"status":"ok","environment":"production"}`;
+- `GET /health/ready` → `{"status":"ready","database":"up"}` — то есть база
+  отвечает на запрос, а не только на старте;
+- лог запуска `API слушает http://0.0.0.0:3000` доказывает всю цепочку: проверка
+  роли стоит до приёма запросов, значит адрес базы собрался верно, подключение
+  прошло по внутренней сети и роль действительно без `SUPERUSER`/`BYPASSRLS`.
+
+Что нашлось только на живом запуске и было бы незаметно по коду — в разделах 3.5
+и ниже: каталог `packages` не копировался в образ, а собственные классы ошибок
+не задавали `name`, из-за чего лог показывал безликое `Error`.
+
+**Развёрнут только API.** Worker отдельным сервисом не запущен, вебхука и бота
+нет, резервное копирование не настроено, восстановление не проверялось.
 
 ## 4. Проверки T-DOC-01
 
