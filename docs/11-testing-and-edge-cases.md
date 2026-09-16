@@ -2,7 +2,7 @@
 
 ## 1. Что проверяется сейчас
 
-На этапе архитектуры: целостность документации, покрытие исходного файла, JSON drafts, арифметика примеров и длительность прогрессии. [Проверочный скрипт](validation/check_architecture.py) — самостоятельная проверка проектных чисел, **не production Progression Engine**. Он не доказывает корректность будущих транзакций, iOS, scheduler или LLM.
+Документационные проверки: целостность документации, покрытие исходного файла, JSON drafts, арифметика примеров и длительность прогрессии. [Проверочный скрипт](validation/check_architecture.py) — самостоятельная проверка проектных чисел, **не production Progression Engine**. Он не доказывает корректность транзакций приложения, Telegram, scheduler или LLM.
 
 При реализации tests ниже обязательны по фазам. Запрещено считать незапущенный сценарий пройденным или mock provider proof — проверкой настоящего OpenAI API.
 
@@ -10,11 +10,11 @@
 
 | Уровень | Объект | Инструмент / среда |
 |---|---|---|
-| Unit/property | Progression, CalendarMath, Scheduler, Recovery, command policy | Pure fixtures, Vitest/property generator; Swift XCTest |
-| Contract | Request/response/schema compatibility, provider translation | JSON Schema/OpenAPI, Swift/TS shared fixtures |
+| Unit/property | Progression, CalendarMath, Scheduler, Recovery, command policy | Pure fixtures, Vitest/property generator |
+| Contract | Request/response/schema compatibility, provider translation | JSON Schema/OpenAPI, backend/web shared fixtures |
 | Database integration | RLS, locks, ledger, receipts, migrations, cursor | Реальный PostgreSQL в isolated test DB |
-| iOS integration | SQLite outbox, migration, timer, extension queues | XCTest, temp databases, controllable Clock |
-| UI | Core flows, error states, accessibility | XCUITest на macOS, реальные устройства для platform behavior |
+| Web integration | IndexedDB outbox/migration/timer, bridge lifecycle | Vitest/browser, controllable Clock, Playwright |
+| UI | Core flows, error states, accessibility | Playwright для browser; реальные Telegram iOS/Android/Desktop для platform behavior |
 | AI eval | Intent, tool safety, grounded response, roadmap feasibility | Versioned dataset; fake deterministic adapter + bounded real API runs |
 | Operational | Backup restore, deployment rollback, provider outage, deletion | Staging rehearsal с synthetic data |
 | Product pilot | Посильность плана, польза RPG/Recovery, time/cost | 4 недели личного использования |
@@ -85,7 +85,7 @@ Property: каждый accepted plan удовлетворяет всем hard co
 11. Token expiry/refresh failure → локальная очередь остаётся, никакого silent logout data loss.
 12. Late completion после missed/recovery: отменён неиспользованный recovery, реальный выполненный сохранён.
 13. Offline undo затем late original duplicate → отменённая награда не возвращается.
-14. Смена аккаунта на том же устройстве не раскрывает DB/widget предыдущего пользователя.
+14. Смена аккаунта на том же устройстве не раскрывает local store предыдущего пользователя.
 15. Reconcile partial batch не делает половину server transaction видимой в UI.
 16. Длинный backfill меняет projection generation атомарно; ошибка job сохраняет предыдущее consistent состояние.
 
@@ -118,14 +118,18 @@ Release targets: zero unauthorized writes/cross-tenant leakage/XP bypass в об
 
 ## 7. Device/platform tests
 
-Минимальная матрица: минимальная поддерживаемая iOS и актуальная стабильная iOS; небольшой/большой экран; устройство со/без Dynamic Island; VoiceOver/Dynamic Type/Reduce Motion; RU locale; 12/24h clock; offline/Wi-Fi/cellular; notification/mic/calendar/health denied/revoked.
+Матрица Telegram: личный iPhone для пилота, Android/Desktop перед заявлением поддержки; минимальная выбранная и текущая стабильная Telegram version, небольшой/большой экран, screen reader/large text/reduced motion, RU locale, 12/24h clock, offline/slow network, mute/blocked bot/mic denial.
 
-Voice: speaker/headphones/Bluetooth, incoming call, foreground→background, provider reconnect, interruption while tool commits. HealthKit: data absent/limited, duplicate phone/watch samples, sample correction. Extensions: shared queue race, stale snapshot, logout, locked device. Эти проверки требуют реальных Apple устройств; Linux не заменяет их.
+T-05 протокол: [14, device tests](14-telegram-platform.md). Раздельно проверить offline во время открытого UI, close/reopen, cold launch, OS kill и очистку storage. Не переносить browser PASS на Telegram WebView. Voice: note/ASR duplicate, noisy speech, actual volume clarification; realtime отдельная матрица. Shortcuts: manual/background/locked/permission revoke, корректность health aggregate; ICS: subscription delay, stale/cancelled UID, экспорт без импорта обратно.
+
+Конкретные regression до Telegram: [R1–R7](15-backend-review.md): top-level stale version, same command ID/different kind, worker late completion после re-lease, все минуты DST gap, изменение boundary через local-date boundary, invalid minimum/actual facts, sensitive sentinel в logs. Затем forged/replayed initData, wrong user/button, unsigned webhook, duplicate callback, origin/XSS, account switch и два канала одной occurrence.
 
 ## 8. Launch gates
 
 **Личный MVP:** core suite + реальный device smoke + export/delete + restore rehearsal + 4-week pilot. Ограничить signup, зафиксировать cost budget и backup ownership.
 
-**Public beta:** tenant isolation/abuse tests; current platform permission/privacy requirements проверены; supported regions/age policy определены; Apple signing/review материалы готовы; retention/deletion и incident support работают; нагрузка на целевой concurrency измерена. Монетизация проверяется отдельно, если добавлена.
+**Public beta:** tenant isolation/abuse tests; current platform permission/privacy requirements проверены; supported regions/age policy определены; Telegram/platform условия для выбранных функций проверены; retention/deletion и incident support работают; нагрузка на целевой concurrency измерена. Монетизация проверяется отдельно, если добавлена.
 
-Факт App Store submission, одобрение, работающие ключи и соответствие публичным условиям нельзя выводить из наличия этих документов.
+Факт публикации Mini App/бота, работающие ключи и соответствие публичным условиям нельзя выводить из наличия этих документов.
+
+Текущий baseline: 53 unit/contracts + 159 PostgreSQL integration прошли при аудите 2026-09-16; дополнительные probes выявили дефекты. Статусы конкретных проверок и ограничения — [15](15-backend-review.md).

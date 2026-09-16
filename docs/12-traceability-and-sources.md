@@ -2,7 +2,7 @@
 
 ## 1. Как читать матрицу
 
-Исходный документ сохранён [без изменений](source/original-concept.ru.md). Строка матрицы означает, что требование **специфицировано**, а не реализовано. Phase показывает планируемый этап появления функции. Статус реализации — в [handoff](13-handoff.md).
+Исходный документ сохранён [без изменений](source/original-concept.ru.md). Строка матрицы означает, что требование **специфицировано**, а не реализовано. Phase показывает планируемый этап появления функции. Статус реализации — в [handoff](13-handoff.md). Платформенные требования iOS пересмотрены пользователем в ADR-013–015: «покрыто» может означать адаптацию/bridge/отложенный native companion, а не наличие полного эквивалента в Telegram. [Матрица возможностей](14-telegram-platform.md) и [новый план](10-implementation-plan.md) обязательны для чтения этих строк.
 
 ## 2. Все 77 разделов концепции
 
@@ -57,9 +57,9 @@
 | 47 | Inbox | [02](02-domain-and-data.md), [05](05-ai-system.md), [07](07-ios-and-experience.md) | 1–2 |
 | 48 | Умные уведомления | [08](08-voice-and-apple.md) | 1; 5 расширенно |
 | 49 | Интеграция с iPhone | [08](08-voice-and-apple.md) | 5 |
-| 50 | HealthKit | [08](08-voice-and-apple.md) | 5 |
-| 51 | Home Screen Widget | [08](08-voice-and-apple.md) | 5 |
-| 52 | Live Activity | [08](08-voice-and-apple.md) | 5 |
+| 50 | HealthKit: bridge spike / native companion позже | [08](08-voice-and-apple.md) | 5 |
+| 51 | Home Screen Widget: быстрые действия сейчас, native widget отдельно | [08](08-voice-and-apple.md) | 5, optional companion |
+| 52 | Live Activity: in-app timer; native extension отдельно | [08](08-voice-and-apple.md) | 5, optional companion |
 | 53 | Память Системы | [05](05-ai-system.md) | 2 |
 | 54 | История | [05](05-ai-system.md) | 2 |
 | 55 | Роли ИИ | [05](05-ai-system.md) | 2 |
@@ -76,9 +76,9 @@
 | 66 | AI Provider abstraction | [05](05-ai-system.md) | 2 |
 | 67 | Backend → OpenAI | [05](05-ai-system.md) | 2 |
 | 68 | Собственный API key | [09](09-security-and-operations.md) | После MVP, опционально |
-| 69 | Offline | [06](06-api-and-sync.md) | 1–3 |
+| 69 | Offline: загруженный Mini App + journal; отдельная PWA позже | [06](06-api-and-sync.md) | 1–3; PWA 5 |
 | 70 | Privacy | [09](09-security-and-operations.md) | 1; public gate |
-| 71 | MVP | [00](00-product-and-decisions.md), [10](10-implementation-plan.md) | 1–6 |
+| 71 | MVP в адаптации Telegram | [00](00-product-and-decisions.md), [10](10-implementation-plan.md) | 1–3 |
 | 72 | Вторая стадия | [00](00-product-and-decisions.md), [10](10-implementation-plan.md) | 1–6 |
 | 73 | Третья стадия | [00](00-product-and-decisions.md), [10](10-implementation-plan.md) | 1–6 |
 | 74 | Философия продукта | [00](00-product-and-decisions.md) | 0–3 |
@@ -90,7 +90,7 @@
 
 | № | Технический пункт | Документ |
 |---:|---|---|
-| 1 | Архитектура iOS | [01](01-system-architecture.md), [07](07-ios-and-experience.md) |
+| 1 | Архитектура клиента: iOS заменён Telegram по ADR-013 | [01](01-system-architecture.md), [07](07-ios-and-experience.md) |
 | 2 | Архитектура backend | [01](01-system-architecture.md), [09](09-security-and-operations.md) |
 | 3 | Модель данных | [02](02-domain-and-data.md) |
 | 4 | Сущности БД | [02](02-domain-and-data.md) |
@@ -115,7 +115,7 @@
 | 23 | Offline | [06](06-api-and-sync.md) |
 | 24 | Синхронизация | [06](06-api-and-sync.md) |
 | 25 | Безопасность API | [05](05-ai-system.md), [06](06-api-and-sync.md), [09](09-security-and-operations.md) |
-| 26 | Apple integrations | [08](08-voice-and-apple.md) |
+| 26 | Apple integrations: адаптация и границы Telegram | [08](08-voice-and-apple.md) |
 | 27 | Структура экранов | [07](07-ios-and-experience.md) |
 | 28 | UI architecture | [01](01-system-architecture.md), [07](07-ios-and-experience.md) |
 | 29 | Этапы разработки | [10](10-implementation-plan.md) |
@@ -136,7 +136,7 @@
 
 ## 5. Официальные источники
 
-Проверка источников: 15 сентября 2026. Внешние источники подтверждают возможности и ограничения API. Стек, формулы, лимиты, сроки и продуктовые решения — авторская архитектура v0.1. Перед реализацией проверить выбранную версию SDK, model availability и действующие платформенные условия.
+Основные источники проверены 15 сентября 2026; Telegram/Shortcuts/PWA/React/Vite — 16 сентября 2026. Apple native/OpenAI realtime ссылки ниже относятся к сохранённым будущим вариантам, не к обязательному стеку Telegram MVP. Внешние источники подтверждают возможности и ограничения API. Стек, формулы, лимиты, сроки и продуктовые решения — авторская архитектура v0.1. Перед реализацией проверить выбранную версию SDK, model availability и действующие платформенные условия.
 
 | Источник | Что сверялось |
 |---|---|
@@ -157,3 +157,17 @@
 | [PostgreSQL RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html) | Row-level policies и ограничения обхода владельцем |
 
 Точные книги и исследования по поведению не пересказывались и не объявляются проверенными источниками эффективности в этом пакете. База принципов добавляется отдельной задачей после чтения источников, без копирования книг.
+
+## 6. Источники переноса на Telegram (2026-09-16)
+
+- [Telegram Mini Apps](https://core.telegram.org/bots/webapps): signed initData, fullscreen/safe areas, lifecycle, storage и home shortcut.
+- [Telegram Bot API](https://core.telegram.org/bots/api): webhook secret, callbacks, сообщения/voice, transport errors.
+- [Apple Shortcuts Find actions](https://support.apple.com/en-euro/guide/shortcuts/apd3c845e881/ios): Calendar Events и Health Samples.
+- [Shortcuts HTTP requests](https://support.apple.com/en-lamr/guide/shortcuts/apd58d46713f/ios): JSON POST для необязательных bridges.
+- [Apple Action Button](https://support.apple.com/en-my/guide/shortcuts/apdfea15680b/ios): пользовательское назначение Shortcut.
+- [Apple Calendar subscriptions](https://support.apple.com/en-mide/guide/iphone/iph3d1110d4/ios): read-only ICS.
+- [WebKit Home Screen Web Push](https://webkit.org/blog/13878/web-push-for-web-apps-on-ios-and-ipados/): отдельная установленная PWA, не обещание внутри Telegram.
+- [ActivityKit](https://developer.apple.com/documentation/activitykit): native Live Activities как отдельный будущий scope.
+- [React](https://react.dev/learn), [Vite](https://vite.dev/guide/): выбранные frontend components/build; версии фиксируются после compatibility smoke.
+
+Составной Shortcuts bridge и его точность/автоматизация пока гипотеза для spike. Показанные возможности API не являются фактом реализации приложения.

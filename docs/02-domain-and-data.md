@@ -39,14 +39,14 @@ Milestone — измеримая проверка, Project — контейне�
 
 | Таблица | Ключевые поля сверх общих | Ограничения / применение |
 |---|---|---|
-| users | auth_subject, locale, status | unique issuer+subject; email не primary identity |
+| users | internal UUID, locale, status; пока auth_issuer/auth_subject | Telegram subject не становится primary key домена; перенос identity в отдельную таблицу — T-01 |
 | user_profiles | display_name, onboarding_state, system_style, timezone, day_boundary_minutes | 1:1; boundary 0…1439; стиль mentor/commander/companion/system |
 | profile_baselines | domain, self_assessment, measured_value, unit, observed_at, source | Исходные способности без XP; версии при изменении |
 | user_preferences | key, value, schema_version | Только разрешённый key registry |
 | constraints | type, payload, valid_from, valid_until, source | time/money/equipment/accessibility/avoidance; sensitive flag |
 | availability_rules | weekdays, wall_start, wall_end, timezone, effective_from, recurrence | Работа/сон/дорога/отдых/свободные окна; интервалы через полночь |
 | consent_records | scope, granted, policy_version, recorded_at | Append-only; текущий доступ — последняя запись |
-| devices | installation_id, platform, push_token_encrypted, sync_state, revoked_at | Token меняется; несколько устройств поддерживаются |
+| devices | installation_id, platform, client_kind, sync_state, revoked_at | Installation Mini App/PWA, не Telegram user ID или fingerprint; native push token только при появлении adapter |
 | sessions | user_id, refresh_hash, family_id, expires_at, revoked_at | Refresh rotation/reuse detection; plaintext refresh не хранить |
 
 ## 4. Цели, roadmap, задания
@@ -92,7 +92,7 @@ Recurrence MVP: daily, selected weekdays, weekly frequency with explicit selecte
 | milestone_skill_links | milestone_id, skill_id, allocation_bp | Checkpoint gate и распределение milestone reward по навыкам |
 | maintenance_targets | target_type, target_id, effective_week, weekly_minutes, version, source_plan_id | Цель поддержания формы; новые значения только на будущую неделю |
 
-`root_activity_id` связывает completion, minimum, дополнительные минуты, HealthKit-подтверждение и исправление. Новый способ доказательства обновляет факт, а не создаёт ещё одно действие. Activity может быть полезной даже при нулевой дополнительной награде из-за лимита.
+`root_activity_id` связывает completion, minimum, дополнительные минуты, подтверждение внешнего health adapter и исправление. Новый способ доказательства обновляет факт, а не создаёт ещё одно действие. Activity может быть полезной даже при нулевой дополнительной награде из-за лимита.
 
 ## 6. Расписание, восстановление, ИИ
 
@@ -118,9 +118,9 @@ Phase 1 создаёт только используемые таблицы; voi
 
 ## 7. Технические сущности
 
-`command_receipts(user_id, command_id, payload_hash, result, committed_seq)`; `user_change_counters(user_id, seq)`; `sync_change_batches(user_id, seq, changes, schema_version)`; `domain_events(event_id, user_id, aggregate_id, kind, payload, schema_version)`; `outbox_events`, `jobs`, `device_sync_cursors`, `deletion_jobs`, `export_jobs`, `audit_events`.
+`command_receipts(user_id, command_id, payload_hash, result, committed_seq)`; целевое расширение T-00a: command kind, semantic hash/version; `user_change_counters(user_id, seq)`; `sync_change_batches(user_id, seq, changes, schema_version)`; `domain_events(event_id, user_id, aggregate_id, kind, payload, schema_version)`; `outbox_events`, `jobs`, `device_sync_cursors`, `deletion_jobs`, `export_jobs`, `audit_events`.
 
-Локально дополнительно: `pending_commands`, `canonical_records`, `optimistic_overlays`, `sync_metadata`, `local_notification_registry`, `pending_conflicts`. Клиент не отправляет таблицы snapshots или ledger как изменяемые данные.
+Локально дополнительно: `pending_commands`, `canonical_records`, `optimistic_overlays`, `sync_metadata`, `pending_conflicts`. Клиент не отправляет таблицы snapshots или ledger как изменяемые данные.
 
 ## 8. Состояния Quest — каноническая трактовка
 
@@ -160,3 +160,24 @@ Phase 1 создаёт только используемые таблицы; voi
 - Hard booking overlap запрещён Scheduler/commit validation; диапазоны `[start,end)` допускают смежные события.
 - Период review и RuleSet неизменяемы; regeneration создаёт revision.
 - Все user tables защищены RLS. Владельцы PostgreSQL-таблиц обычно обходят RLS, поэтому runtime-role отделена от migration-owner; настройку проверять интеграционными тестами. [PostgreSQL RLS](https://www.postgresql.org/docs/current/ddl-rowsecurity.html)
+
+## 10. Telegram и integrations: планируемые расширения
+
+Ниже целевые сущности, **не существующие миграции**. Добавлять по T-01/02 и Phase 5, с RLS/ownership и версиями контрактов. Существующие users/devices/sessions не пересоздавать и не менять их UUID.
+
+| Сущность | Ключи / смысл | Инвариант |
+|---|---|---|
+| external_identities | user_id, issuer, subject, verified_at, revoked_at | unique(issuer,subject); identity lookup узко разрешён до tenant context; linking не по username |
+| telegram_chats | bot_id, telegram_user_id, user_id, private_chat_id, write_allowed, blocked_at | Принадлежность из verified update; chat ID не user ID; внутренний UUID не меняется |
+| telegram_auth_exchanges | bot_id, proof_digest, expires_at, consumed_at | Single-use proof digest; raw initData не хранить, TTL cleanup |
+| telegram_update_inbox | bot_id, update_id, sender_ref, status, payload_ref, received_at | Unique(bot_id,update_id); atomic ack; raw payload короткоживущий |
+| telegram_action_tokens | token_hash, user_id, target, expected_version, kind, command_id, expires_at, receipt_ref | One semantic command per token, ownership+expiry+version |
+| notification_deliveries | user_id, notification_key, revision, channel, state, message_id, attempt | Unique notification/revision/channel; unknown send outcome не равен failed |
+| integration_connections | user_id, provider, scopes, credential_hash/encrypted, consent_ref, revoked_at | Credential не разрешает общий CommandBus; отдельная проверка scope |
+| integration_import_batches | connection_id, source_range, observed_at, complete, revision, status | Partial import не удаляет отсутствующие записи |
+| calendar_feeds | user_id, token_hash, selection, redaction_mode, revoked_at | Feed URL является ограниченным секретом; не содержит session token |
+| day_policy_epochs | user_id, timezone, boundary, effective_at, version | Переходы без overlapping days/double buckets; T-00d |
+
+Inbox/identity lookup до определения user и worker-wide dispatch требуют узких explicit database policies/functions; не отключать tenant isolation целиком. Все user-owned связанные строки имеют составные FK. Web `device_id` — зарегистрированная installation, не случайный UUID на каждый запрос. Для bot/system actor использовать отдельный trusted actor context с audit metadata; не имитировать чужой device.
+
+Идентификаторы Telegram и PostgreSQL BIGINT counters не округлять при JSON/JavaScript преобразовании. Канонический wire type закрепить в схемах, включая версии; тестировать крайние значения. Новые tables/columns проходят миграцию upgrade уже созданной synthetic БД, а не только clean install.

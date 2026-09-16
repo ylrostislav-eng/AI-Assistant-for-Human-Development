@@ -192,7 +192,7 @@ def report(examples: dict[str, int]) -> str:
     rows = [
         "# Проверка математического баланса v0.1", "",
         "Сгенерировано `python3 docs/validation/check_architecture.py --write-report`.", "",
-        "Это проверка формул архитектуры. Production engine, rolling-window replay, iOS, API и базы данных ещё не реализованы и этим отчётом не проверяются.", "",
+        "Это проверка формул архитектуры. Production engine и rolling-window replay ещё не реализованы. Частичный backend проверяется отдельными тестами; этот отчёт не проверяет API/БД, Telegram, клиент или доставку уведомлений.", "",
         "## Сроки роста", "",
         "Постоянный уже начисленный XP, без перерывов; дни округлены вверх.", "",
         "| Level | Lifetime XP | 30 XP/day | 70 XP/day | 120 XP/day |",

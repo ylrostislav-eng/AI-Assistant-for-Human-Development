@@ -1,175 +1,156 @@
-# 01. Архитектура системы
+# 01. Архитектура системы: Telegram Mini App + бот
+
+Актуально: 2026-09-16, ADR-013–016. Это целевая архитектура; наличие каждого модуля проверять по [handoff](13-handoff.md). Аудит сервера: [15](15-backend-review.md).
 
 ## 1. Общая схема
 
 ```mermaid
 flowchart TD
-  UI[SwiftUI: пять вкладок] --> UC[iOS Use Cases]
-  UC --> DB[(SQLite / GRDB)]
-  UC --> OB[Локальная очередь команд]
-  OB --> SY[SyncCoordinator]
-  SY --> API[HTTPS API + Authentication]
-  API --> CMD[CommandBus + Policy + Validation]
-  CMD --> DOM[Goals / Quests / Calendar / Recovery]
-  CMD --> PE[Progression Engine]
-  DOM --> PG[(PostgreSQL)]
+  TG[Telegram: запуск Mini App] --> UI[Web UI: пять вкладок]
+  UI --> UC[Use cases + repositories]
+  UC --> LOCAL[(IndexedDB: snapshot + pending commands)]
+  LOCAL --> SY[SyncCoordinator]
+  SY --> API[HTTPS API + app session]
+  CHAT[Личный чат: команды, кнопки, voice] --> WH[Проверенный webhook + inbox]
+  WH --> BOT[Telegram adapter]
+  BOT --> CMD[CommandBus + Policy + Validation]
+  API --> CMD
+  CMD --> DOM[Goals / Quests / Scheduling / Recovery]
+  CMD --> PE[Deterministic Progression Engine]
+  DOM --> PG[(PostgreSQL: confirmed state)]
   PE --> PG
   PG --> OUT[Transactional Outbox]
   OUT --> WK[Worker: reminders / reviews / day close]
-  API --> AI[AI Orchestrator]
-  AI --> CTX[Context Builder / Memory]
-  CTX --> PG
-  AI --> OAI[OpenAI Responses]
+  WK --> SEND[Telegram Bot API adapter]
+  SEND --> CHAT
+  API --> AI[AI Orchestrator + Memory]
+  BOT --> AI
+  AI --> PROVIDER[AI provider / ASR / TTS]
   AI --> CMD
-  WK --> APNS[APNs]
-  PG --> SY
+  BRIDGE[Optional: Shortcuts / calendar / health adapters] --> API
+  PWA[Optional: тот же UI в установленной PWA] --> UC
 ```
 
-Backend, worker и PostgreSQL могут находиться на одном сервере в личной версии. Разделение процессов позволяет перезапускать worker без потери API-запросов. Сетевая микросервисная архитектура для этого масштаба не нужна.
+Один модульный backend, отдельный worker, одна PostgreSQL. Mini App — главный продуктовый интерфейс; бот — быстрый вход и канал связи. Прогресс не хранится в сообщениях бота. PWA — дополнительный режим того же клиента после проверки потребности в независимом offline-запуске; не третья кодовая база и не условие начала пилота.
 
 ## 2. Технологии
 
-| Область | Выбор | Обоснование |
+| Область | Решение | Статус |
 |---|---|---|
-| iOS UI | SwiftUI, Observation, NavigationStack | Нативный интерфейс; состояние экрана отделено от хранилища |
-| Конкурентность | async/await, actors, Sendable | Последовательная sync queue, UI на MainActor |
-| Локальная БД | SQLite через GRDB; SQL migrations | Транзакции, наблюдение за выборками, явный offline journal |
-| Networking | URLSession; собственные DTO из контрактов | Нет зависимости от vendor SDK в UI |
-| Backend | TypeScript strict, Node.js LTS, Fastify | Валидация запросов и простая модульность |
-| Data access | node-postgres, параметризованный SQL | Прозрачные транзакции/locks/RLS |
-| Database | Поддерживаемый PostgreSQL | Реляционная целостность, JSONB для ограниченных payload |
-| Jobs v1 | Outbox + небольшой PostgreSQL job worker | Без Redis; протокол retries/lease описан ниже |
-| AI | Официальный OpenAI SDK за AIProvider | Первый provider полноценный, последующие по capability contract |
-| Контракты | JSON Schema + OpenAPI 3.1 | Согласованные DTO и граница команд |
-| Тесты | XCTest/XCUITest, Vitest, реальные PostgreSQL integration tests | Инварианты, migrations, offline, UI |
-| Наблюдаемость | Структурированные редактированные логи + OpenTelemetry | Связать command_id, request_id, job_id без личного текста |
+| Mini App | TypeScript + React + Vite, CSS tokens, SVG; mobile first | Предлагаемый клиент; scaffold ещё нет |
+| Telegram bridge | Небольшой adapter над официальным WebApp API | Capability checks и fallback, domain не зависит от Telegram |
+| Локальные данные | IndexedDB, transactional command journal, repositories | Проверить в T-05; wrapper только при необходимости |
+| Секреты клиента | Access в памяти; refresh в SecureStorage при поддержке | Нет tokens в IndexedDB/localStorage; fallback — повторный login |
+| Backend | Существующие TypeScript strict, Fastify, node-postgres | Сохранить pins/lockfile; [toolchain](toolchain.md) |
+| Jobs | PostgreSQL outbox + worker с lease fencing | Основа есть, исправления T-00b обязательны |
+| AI | AIProvider; отдельные ASR/TTS adapters | Серверные ключи; модель после eval |
+| Contracts | JSON Schema + OpenAPI 3.1; общие DTO | OpenAPI перечисляет только реализованные endpoints |
+| Web tests | Vitest + Playwright; реальные Telegram clients | Browser mocks не доказывают свойства WebView |
+| Hosting | HTTPS origin: web assets + reverse proxy `/api`; API/worker/DB | Railway — кандидат из прежнего плана, запуск не проверен |
 
-Версии не объявляются «последними» в документации: выбрать совместимые поддерживаемые версии в P0-01 и зафиксировать lockfiles/toolchain. [GRDB](https://github.com/groue/GRDB.swift) предоставляет SQLite-инструменты; [Fastify](https://fastify.dev/docs/latest/Reference/Validation-and-Serialization/) поддерживает схему валидации и сериализации. Выбор этих библиотек — наше архитектурное решение.
+Выбор React/Vite — наше решение для компонентов и сборки, не требование Telegram. Перед добавлением зависимостей проверить совместимость с существующим Node и закрепить версии. [React](https://react.dev/learn), [Vite](https://vite.dev/guide/). Не добавлять SSR, Redis, отдельный bot framework или WebGL engine без конкретной задачи.
 
-## 3. iOS: слои и зависимости
+## 3. Клиент: слои
 
-`View → FeatureModel → UseCase → Repository protocol → Local/Remote adapters`.
+`View → FeatureModel/Hook → UseCase → Repository → local store / API`.
 
-- View рендерит состояние и передаёт намерение пользователя. Никакого расчёта XP или сетевых запросов из body.
-- FeatureModel (`@Observable`, `@MainActor`) управляет loading, ошибки, sheets, selection.
-- UseCase создаёт команду, оптимистично меняет локальную проекцию и записывает outbox в одной SQLite-транзакции.
-- Repository читает согласованную локальную проекцию. Remote response сначала попадает в sync/repository, а не непосредственно в View.
-- `SyncCoordinator` actor обслуживает одну очередь на account, retries и cursor. Отдельный `Clock` даёт тестируемые дату/монотонное время.
-- `ProgressionPreview` получает последний серверный snapshot и pending actions. Предварительный XP помечен «ожидает синхронизации»; authoritative Rank и новые уровни подтверждает сервер.
-- `AppContainer` собирает зависимости; `MockContainer` используется только previews/tests. В production нет скрытого fallback на fake backend.
+- View показывает состояние, не считает confirmed XP и не вызывает Bot API.
+- UseCase создаёт UUID команды и одной IndexedDB-транзакцией сохраняет intent + optimistic overlay. Ошибка сохранения не может выглядеть успешной отметкой.
+- Canonical snapshot и pending overlay разделены. Смена пользователя переключает отдельное хранилище; чужой кэш не показывается даже на loading screen.
+- SyncCoordinator отправляет immutable команды, применяет receipts/batches; одна активная отправка на account/installation. Несколько окон координируются локальным lock/leader, correctness дополнительно защищает сервер.
+- ClientCapabilities определяет Telegram methods, устойчивость storage, service worker, fullscreen, haptic, mic. Наличие метода и фактический успех проверяются отдельно.
+- Telegram adapter управляет lifecycle, BackButton, safe areas, темой и запуском; browser adapter нужен тестам и будущей PWA.
+- Timer хранит интервалы и timestamps, а не число тиков `setInterval`. Закрытый WebView не обязан выполнять код.
+- RewardPreview опционален: до паритета с engine показывать «награда после синхронизации». Level Up — по уникальному server transition ID.
 
-## 4. Backend: модули
+Offline/auth — [06](06-api-and-sync.md), интерфейс — [07](07-ios-and-experience.md), Telegram — [14](14-telegram-platform.md).
+
+## 4. Backend: владение модулями
 
 | Модуль | Владеет | Вход / выход |
 |---|---|---|
-| Identity | users, devices, sessions | Apple proof → app session |
-| Profile | распорядок, preferences, consent, baseline | редактирование профиля → domain event |
-| Goals | goals, milestones, projects, metrics | план/измерение → progression evidence candidate |
-| Quests | templates, occurrences, actions, activity | completion → validated ActivityRecord |
-| Scheduling | availability, events, plan versions, placements | constraints → PlanProposal |
-| Recovery | missed reasons, cases, recovery links | пропуск → ограниченные варианты возврата |
-| Progression | rule sets, reward ledger, snapshots | validated activity → deterministic awards |
-| AI | turns, tool runs, provider adapter | контекст → ответ / command proposal |
-| Memory | подтверждённые факты, hypotheses, summaries | отбор контекста; исправление/удаление |
-| Reviews | factual reports, trend aggregates | Daily/Weekly/Monthly facts |
-| Notifications | reminders, device dispatch state | события → локальные descriptors/APNs |
-| Sync | commands, change batches, tombstones | очередь клиента ↔ каноническое состояние |
-| Privacy | export/delete workflows | запрос пользователя → job + receipt |
+| Identity | users, external identities, devices, sessions | Проверенное Telegram proof → internal user → app session |
+| Telegram | update inbox, chat binding, action tokens, Bot API transport | Update → domain intent; receipt → сообщение |
+| Profile | preferences, consent, baseline, распорядок | Изменение профиля → versioned event |
+| Goals | goals, milestones, projects, metrics | План / измеримый результат |
+| Quests | templates, occurrences, actions, ActivityRecord | Проверенный факт выполнения |
+| Scheduling | availability, events, user days, placements, proposals | Constraints → допустимый план |
+| Recovery | missed reasons, cases, recovery links | Ограниченное возвращение без наказания за болезнь |
+| Progression | rules, award ledger, snapshots | Activity → deterministic awards |
+| AI / Memory | turns, tools, memories, hypotheses | Context → ответ / proposal / command |
+| Reviews | фактические отчёты и narrative revisions | History → факты и объяснение |
+| Notifications | preferences, schedules, delivery ledger | Reminder revision → transport job |
+| Integrations | connections, imports, source mappings, calendar feeds | Внешние факты → evidence/availability |
+| Sync | receipts, counters, batches, tombstones | Канонический журнал изменений |
+| Privacy | export/delete/revocation workflows | Запрос пользователя → job + receipt |
 
-Модуль меняет собственные таблицы через use cases. Командная транзакция может атомарно обратиться к нескольким модулям через явные interfaces. Внешний AI/HTTP никогда не вызывается при удержании SQL-lock.
+Модули пишут собственные таблицы через interfaces внутри общей транзакции. Telegram adapter, UI и LLM не пишут напрямую в progression. AI/HTTP не вызываются под SQL-lock. Боту не выдаётся глобальный пользовательский bearer token: actor выводится из проверенного update, ownership проверяется обычным domain policy.
 
-## 5. Ключевая транзакция выполнения
+## 5. Выполнение квеста из любого канала
 
 ```mermaid
 sequenceDiagram
-  participant I as iPhone
-  participant A as API / CommandBus
-  participant P as Progression
+  participant C as Mini App / Bot / AI Tool
+  participant A as CommandBus
   participant D as PostgreSQL
-  I->>I: SQLite: pending completion + outbox
-  I->>A: complete_quest(command_id, version, activity)
-  A->>D: begin; lock user mutation counter; deduplicate
-  A->>D: validate owner, occurrence, evidence; insert activity
-  A->>P: calculate(validated facts, rules, prior buckets)
-  P-->>A: reward entries + new projections
-  A->>D: activity, status, ledger, change batch, outbox, receipt
+  participant P as Progression Engine
+  C->>A: normalized command + version + actual activity
+  A->>D: begin; tenant context; user lock; semantic hash / receipt
+  A->>D: owner + target + version + evidence validation
+  A->>P: Activity + rules + prior buckets
+  P-->>A: award deltas + projections
+  A->>D: Activity + state + ledger + changes + outbox + receipt
   A->>D: commit
-  A-->>I: committed receipt + canonical batch
-  I->>I: reconcile pending; refresh views; celebrate once
+  A-->>C: canonical receipt
+  C->>C: reconcile; celebrate server transition once
 ```
 
-Сбой до commit не создаёт частичной награды. Сбой ответа после commit приводит к повтору той же команды и получению прежнего receipt. Доставка worker events повторяемая; побочные эффекты дедуплицируются.
+До Phase 3 тот же путь сохраняет Activity без выдуманного XP. Потеря ответа после commit разрешается повтором той же команды. Два устройства, завершившие одну occurrence, не создают два root действия. Канал не влияет на формулы.
 
-## 6. Фоновая обработка
+## 6. Worker и внешняя доставка
 
-`jobs`: id, kind, dedupe_key, payload_ref, due_at, attempts, lease_until, status, last_error_code. Не хранить полный чат в payload.
+1. Dispatcher атомарно переводит outbox в jobs с уникальным dedupe key.
+2. Claim берёт только свободную вместимость worker. Каждая аренда имеет уникальный `lease_token`/generation, `lease_until`, attempt и max_attempts.
+3. Success/failure/renewal — compare-and-set по актуальному token. Устаревший исполнитель не меняет новую аренду. Истечение lease не разрешает превышать max_attempts.
+4. Долгая работа продлевает аренду; crash/retry/backoff/jitter/dead-letter тестируются с двумя workers.
+5. Domain handlers используют CommandBus и deterministic command ID. Внешний HTTP идёт после commit.
+6. У Telegram sends нет нашей гарантии exactly-once: timeout может означать уже доставленное сообщение. Delivery ledger хранит `pending/sending/sent/unknown/failed`, известный message_id редактируется; неизвестный исход не запускает бесконечную рассылку.
+7. Перед reminder проверить revision/status, quiet hours, consent, blocked state. Фоновый cron не зависит от Mini App.
 
-1. Dispatcher переносит outbox-события в jobs; уникальный dedupe_key предотвращает двойное создание.
-2. Worker резервирует небольшую пачку через `FOR UPDATE SKIP LOCKED`, выставляет lease и фиксирует транзакцию.
-3. Выполняет работу вне транзакции; при успехе отмечает done. При падении lease истекает, работа повторяется.
-4. Retry: exponential backoff + jitter, максимум 8 попыток; затем dead-letter и operational alert.
-5. Handler вызывает тот же CommandBus с системным actor, явным user_id и deterministic command_id.
-6. Scheduler периодически проверяет просроченные day-close jobs. iOS не является надёжным cron-сервисом.
+## 7. Дерево реализации
 
-Для MVP это только перечисленные job types, без написания универсальной платформы очередей. При увеличении нагрузки адаптер можно заменить на готовую очередь; business idempotency сохраняется.
-
-## 7. Предлагаемое дерево реализации
-
-Ниже **будущие** файлы, не существующее приложение.
+Backend-каркас уже есть; остальные каталоги создавать по задаче.
 
 ```text
-apps/
-  ios/
-    SystemApp.xcodeproj/
-    SystemApp/
-      App/{SystemApp,AppContainer,RootRouter}.swift
-      Features/{Onboarding,Today,System,Goals,Character,Calendar,Inbox,Settings,Reviews}/
-      DesignSystem/{Tokens,SystemPanel,QuestCard,XPBar,RankBadge,SystemCore,Motion}.swift
-      Resources/{Assets.xcassets,Localizable.xcstrings,PrivacyInfo.xcprivacy}
-      Info.plist
-    Packages/
-      Domain/Sources/{Models,Commands,Time,Policies}/
-      Application/Sources/{UseCases,Repositories}/
-      Data/Sources/{SQLite,Migrations,Repositories,Sync,Networking}/
-      Engines/Sources/{ProgressionPreview,CalendarMath,Timer}/
-      Integrations/Sources/{Notifications,Keychain,EventKit,HealthKit,Voice}/
-    SystemAppTests/
-    SystemAppUITests/
-    SystemWidgets/                         # Phase 5
-    SystemWatch/                           # Phase 6
-services/
-  backend/
-    src/
-      app.ts
-      server.ts
-      worker.ts
-      config.ts
-      modules/{identity,profile,goals,quests,scheduling,recovery,progression,ai,memory,reviews,notifications,sync,privacy}/
-      shared/{auth,db,commands,clock,errors,observability}/
-    db/{migrations,seeds}/
-    tests/{unit,integration,contracts,ai-evals}/
+apps/miniapp/                         # будущее
+  src/app/{bootstrap,router,container}/
+  src/features/{onboarding,today,system,goals,character,calendar,inbox,settings,reviews}/
+  src/design/{tokens,components,motion}/
+  src/application/{commands,repositories,sync,timer}/
+  src/adapters/{telegram,browser,indexeddb,http,secure-storage}/
+  src/pwa/                           # позже: manifest, service worker, browser auth
+  tests/{unit,contracts,e2e}/
+services/backend/
+  src/{app,server,worker,config}.ts
+  src/modules/{identity,telegram,profile,goals,quests,scheduling,recovery,
+               progression,ai,memory,reviews,notifications,integrations,sync,privacy}/
+  src/shared/{auth,db,commands,time,errors,observability}/
+  db/migrations/
+  tests/{unit,integration,contracts,ai-evals}/
 packages/
   contracts/{openapi.yaml,schemas,generated,fixtures}/
   rules/{progression,scheduling,recovery}/
-  test-fixtures/{users,plans,activities,sync,calendar,ai}/
-ops/
-  compose.yaml
-  Dockerfile
-  env.example
-  runbooks/{deploy,restore,delete-user,provider-outage,rotate-secrets}.md
-docs/
-  source/
-  contracts/                              # текущие архитектурные черновики
-  validation/
-.github/workflows/{backend,ios,contracts}.yml
+  test-fixtures/
+ops/{compose.yaml,Dockerfile,env.example,runbooks}/
+docs/{source,validation,archive}/
 ```
 
-Создавать каталоги по потребности фазы, не генерировать десятки пустых модулей. В Phase 1 каждый backend-модуль обычно содержит `routes.ts`, `service.ts`, `repository.ts`, `types.ts`; pure engines — `engine.ts` и tests. Пакеты Swift не должны превращаться в один пакет на каждую кнопку.
+Возможный будущий `apps/ios-companion/` — HealthKit/WidgetKit/ActivityKit bridge поверх того же account/API, после отдельного поручения и появления Mac. Он не зависимость Telegram MVP.
 
 ## 8. Контракты расширения
 
-`AIProvider`: generateTurn, generateStructuredPlan, capabilities; voice — отдельный `RealtimeProvider`, поскольку transport/lifecycle отличаются.
+`AIProvider`: generateTurn/generateStructuredPlan/capabilities. `SpeechProvider`: transcribe/synthesize. `RealtimeProvider` — отдельный будущий lifecycle, без обязательства делать его вместе с voice notes.
 
-`Clock`: nowUTC, monotonicNow. `CalendarPolicy`: userDayAt, nextBoundary, expandRecurrence. `ProgressionEngine`: evaluateActivity, projectAt, reverseAward. `SchedulerEngine`: propose(snapshot, constraints). `RecoveryEngine`: propose(case, capacity). Все engine outputs сериализуемы и включают rule_version.
+`Clock`: nowUTC/monotonicNow; `CalendarPolicy`: userDayAt/nextBoundary/expandRecurrence; `ProgressionEngine`: evaluateActivity/projectAt/reverseAward; `SchedulerEngine`: propose(snapshot,constraints); `RecoveryEngine`: propose(case,capacity).
 
-Новые providers, solver или storage adapter обязаны проходить те же acceptance fixtures. Интерфейсы не обещают, что любую модель можно заменить без проверки tool/voice capabilities.
+`ClientPlatform`: launchContext/capabilities/lifecycle/navigation/feedback; `LocalStore`: transactional pending + canonical projections; `NotificationTransport`: send/edit/revokeWhenPossible; `EvidenceAdapter`: normalize/match/revise. Outputs engines включают rule_version. Новый adapter проходит общие acceptance fixtures.

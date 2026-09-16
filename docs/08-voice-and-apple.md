@@ -1,104 +1,110 @@
-# 08. Голос и интеграции Apple
+# 08. Голос, календарь, здоровье и быстрые действия в Telegram
 
-## 1. Общий принцип
+Актуально: 2026-09-16. Имя файла сохранено для совместимости ссылок. Вместо обязательных iOS-фреймворков используем adapters к общему backend. Нативный companion остаётся возможным расширением, не условием запуска. Ни одна интеграция ниже ещё не реализована.
 
-Все интеграции используют те же domain commands, что и ручной интерфейс. Голос не отдельный чат с другой памятью; HealthKit не отдельный XP-калькулятор; Widget не пишет в ledger.
+## 1. Голос: сначала Telegram voice messages
 
-## 2. Voice MVP — Phase 4
+Поток: проверенный webhook → voice file reference → bounded download → ASR → transcript/intent → существующий AI ToolGateway → CommandBus → receipt → текстовая карточка, при включении TTS — озвучка.
 
-Сначала вертикальный сценарий push-to-talk: нажать → произнести → увидеть распознанное намерение → выполнить или принять proposal → услышать результат. Постоянное фоновое прослушивание/собственное wake word не входит в план.
+- Входной voice update дедуплицируется по bot/update ID. ASR job не создаёт отдельный completion при повторе.
+- Download только по проверенному Telegram file path через server adapter, с ограничениями размера, времени, MIME/container и длительности; URL с bot token не попадает в логи/клиент. Не скачивать произвольный URL, продиктованный пользователем/моделью.
+- Стартовый лимит одной заметки 120 секунд, дневной voice budget 10 минут, настраиваемые сервером. Проверять фактические bytes/duration, а не только metadata.
+- Raw audio по умолчанию временный: удалить после ASR и на failure/TTL cleanup; transcript под обычной chat retention. Согласие на ASR/provider обработку показывается до включения.
+- «Тренировка выполнена» без объёма требует уточнения; неоднозначный target/дата — выбор. Явное однозначное действие исполняется в пределах policy. Большой plan diff/удаление — подтверждение, как в [05](05-ai-system.md).
+- Озвучка описывает committed receipt, не догадку модели. Остановка генерации не отменяет уже committed command; показать Undo по контракту.
+- Ошибка ASR оставляет пользователю текстовый путь. Низкая уверенность не превращается в факт действия. Сведения о болезни сохраняются только в выбранном объёме.
 
-```mermaid
-sequenceDiagram
-  participant I as iPhone / AudioSession
-  participant B as Backend
-  participant O as OpenAI Realtime
-  I->>B: Authenticate + create bounded voice session
-  B->>O: Create ephemeral authorization / relay SDP
-  B-->>I: Session config / short-lived authorization
-  I->>O: WebRTC audio + data channel
-  B->>O: Server sideband for bound call
-  O->>B: Tool call
-  B->>B: ToolGateway → CommandBus / Proposal
-  B-->>O: Canonical tool result
-  O-->>I: Speech + captions
-  B-->>I: Structured receipt / sync change
-```
+Bot API поддерживает voice messages и file retrieval; детали методов и действующие ограничения проверить при реализации. [Telegram Bot API](https://core.telegram.org/bots/api#voice)
 
-Realtime API поддерживает WebRTC, временные client secrets и серверное управление с sideband. Временную авторизацию выдаёт backend; обычный API key остаётся на сервере. [WebRTC](https://developers.openai.com/api/docs/guides/voice-webrtc), [Server-side controls](https://developers.openai.com/api/docs/guides/voice-server-controls)
+## 2. Голос внутри Mini App и realtime
 
-Выбранный API в этой версии плана — **Realtime**, не смешивать его session/events с GPT-Live. Если provider/API меняется, adapter и fixtures пересматриваются явно.
+P4-04: кнопка записи в System, если WebView разрешает microphone/recording. Feature detection, явное разрешение, foreground-only capture, отправка blob на тот же ASR путь. При отказе — предложение отправить voice боту, без бесконечного permission prompt. Safari/Telegram/iOS/Android проверяются отдельно.
 
-### Привязка session к пользователю
+Полноценный разговор с перебиваниями остаётся отдельной задачей P4-05: browser WebRTC, краткоживущая server-issued авторизация, проверяемая привязка user/session, один владелец tool execution на backend, quotas/timeouts, transcript/receipt reconciliation. Exact provider API и model ID сверить в spike; старый native WebRTC design находится в архиве и не является инструкцией поставить Swift-библиотеку.
 
-Backend сохраняет app voice_session_id, user_id, device_id, provider call_id, authorization nonce, allowed scopes, expires_at, budget. Предпочтительный initial path: backend принимает SDP и сам создаёт provider call, чтобы получить call_id из доверенного ответа. Альтернативный ephemeral path допускается после проверки безопасной привязки call; не подключать privileged sideband к произвольному call_id, присланному клиентом.
+Успешные голосовые сообщения не доказывают работоспособность realtime. Realtime не блокирует основной цикл и не превращается в скрытую постоянно слушающую функцию.
 
-Tool execution имеет **одного владельца — backend**. Если iOS тоже получает tool event по data channel, он отображает статус и не выполняет мутацию второй раз. Авторизованный user/session scope проверяется непосредственно при каждом tool call.
+## 3. Apple Calendar: три отдельных направления
 
-## 3. iOS voice implementation
+### 3.1. Система → Calendar: ICS export/subscription — P5-01
 
-Модули: `VoiceSessionCoordinator`, `RealtimeTransport`, `AudioSessionManager`, `TranscriptStore`, `VoiceToolStatusPresenter`. Native WebRTC library выбирается и проверяется в P0-02/P4-01: поддерживаемые iOS/архитектуры, лицензия, размер, обработка audio routing, актуальный release. SwiftUI сам по себе не предоставляет браузерный RTCPeerConnection; JS-пример из документации не считать native iOS SDK.
+Пользователь выбирает, что показать в отдельном календаре «Система»: scheduled quest blocks/selected milestones, без заметок/чата. Разовая загрузка `.ics` — snapshot; подписка на HTTPS feed — последующие обновления. Apple Calendar поддерживает подписку на внешний read-only iCalendar. [Apple](https://support.apple.com/en-mide/guide/iphone/iph3d1110d4/ios)
 
-`AVAudioSession`/microphone permissions, Bluetooth/headphones/speaker, interruption телефоном, route changes, echo cancellation и VAD проверять на устройстве. Настройки audio категории/mode фиксировать после spike. Fallback: запись ограниченного аудио → backend transcription → обычный text turn → TTS; без сети обычный текстовый/manual UI.
+Контракт feed:
 
-Состояния: idle → requesting_permission → connecting → listening ↔ speaking → processing_tool/awaiting_confirmation → ended; interrupted/reconnecting/error доступны из активных состояний.
+- Стабильный `UID` для placement/event, `SEQUENCE` при revision, корректные `DTSTART/DTEND`, UTC или TZID; all-day — date-only. В соответствии с iCalendar, проверять parser fixture и реальный Calendar. [RFC 5545](https://www.rfc-editor.org/rfc/rfc5545)
+- Непредсказуемый отзывной capability token, scope только выбранного feed, на сервере hash; URL не логировать. Кто получил ссылку, может читать feed: объяснить это в UI; минимальный нейтральный title по умолчанию. Не требовать публиковать личный iCloud календарь.
+- Актуальное окно feed, например −30/+90 дней. Отменённые/перенесённые события получают стабильные revisions/cancellation semantics; проверка на дубли, DST, исключения и смену зоны обязательна.
+- Время обновления выбирает клиент Calendar, поэтому мгновенную синхронизацию не обещать. Для срочного reminder использовать основной notification channel. Alarm в ICS по умолчанию выключен, чтобы не дублировать бота.
+- Отмена подписки/отзыв feed не удаляет Goal, Activity или XP. Export из Системы не является импортом занятости обратно.
 
-- Barge-in: остановить playback и согласовать provider conversation state, не только скрыть caption.
-- Низкая уверенность в дате/имени: повторить короткое уточнение; command не коммитить.
-- Повтор «я сделал тренировку» после reconnection не создаёт новую награду.
-- Закрытие app/звонок: остановить/приостановить микрофон и обработать незавершённую команду; UI после возврата сверяет receipt.
-- Session duration default 10 мин, idle timeout 60s, настраиваемый дневной бюджет; warning до остановки, graceful finish и учёт cost.
-- Не хранить raw audio по умолчанию. Transcript — тот же retention/user controls, что и текст.
-- «Готово» произносится после committed result. Sideband/stream interruption не является гарантированным отзывом уже прозвучавшей фразы; критическое подтверждение отображается канонической карточкой.
+### 3.2. Calendar → Система: busy-only import — P5-02
 
-## 4. EventKit: Apple Calendar и Reminders — Phase 5
+Первый необязательный мост — Shortcut «Передать занятость»: прочитать выбранный период/календари, отправить только start/end/timezone/all-day и source IDs в scoped endpoint. Apple Shortcuts имеет Find Calendar Events и HTTP requests. Это основание для spike; background execution/конкретные поля и разрешения проверяются на телефоне. [Find actions](https://support.apple.com/en-euro/guide/shortcuts/apd3c845e881/ios), [HTTP в Shortcuts](https://support.apple.com/en-lamr/guide/shortcuts/apd58d46713f/ios)
 
-Внутренний календарь независим и работает без EventKit. Начать с импорта busy intervals из выбранных календарей и явного экспорта выбранных задач в выделенный System calendar. Двусторонняя синхронизация всех чужих событий не нужна для первой интеграции.
+Каждая import batch сообщает полный/частичный охват, observed_at, range и source. Частичный/упавший импорт не стирает остальные события. Внешние events хранятся отдельно с mapping, ownership/provenance; absence в полном snapshot может дать tombstone только в его scope. Exported «Система» календарь исключить из busy import, иначе возникнет цикл и удвоится занятость.
 
-EventKit различает уровни доступа; для чтения существующих событий нужен соответствующий full access, а использование EventKitUI может позволить добавить событие без полного чтения календаря. Использовать актуальные usage descriptions и API target SDK. [Apple EventKit access](https://developer.apple.com/documentation/eventkit/accessing-the-event-store), [TN3152](https://developer.apple.com/documentation/technotes/tn3152-migrating-to-the-latest-calendar-access-levels)
+Другой путь — OAuth connector облачного календаря, которым уже пользуется владелец. Отдельно проверить scopes, delta sync, provider terms и цену на этапе подключения. Не собирать Apple ID password и не обещать EventKit из браузера. Ручная занятость всегда остаётся доступной; показывать «обновлено …» и stale indicator.
 
-Импорт по умолчанию: start/end/busy/calendar pseudonym; title/location/notes только если нужны и разрешены. Read-only календарь нельзя редактировать. Изменение события вне app инвалидирует proposals; EventKit notifications инициируют reconcile при следующей доступной возможности.
+### 3.3. Двусторонняя синхронизация
 
-ExternalMapping: provider, device-scoped external ID, internal ID, original fingerprint, last sync revision, ownership. Event IDs могут требовать повторного поиска после изменений; не использовать их как вечную глобальную identity. Собственные exports имеют стабильную app linkage metadata/deep link. Предотвращать sync loops собственным revision/fingerprint.
+Позже, только с отдельными conflict/mapping rules. Изменение во внешнем календаре порождает proposal или versioned command. Никогда не превращать удаление календарного события в отмену факта выполненной тренировки. Native EventKit adapter возможен в companion, если он станет нужен; текущему пилоту он не обязателен.
 
-Recurring events: this instance vs future series; исключения, отмены, all-day, DST. Удаление внешнего события не удаляет Goal/Activity/XP. Отказ/отзыв permission отключает интеграцию и помечает cached availability устаревшей.
+## 4. Здоровье: постепенно повышать автоматизацию — P5-03
 
-Reminders: отдельное разрешение/adapter, сначала явный экспорт reminder и ручное сопоставление; completed reminder → обычный completion proposal, если данные не позволяют определить объём. Не дублировать одну задачу в Calendar/Reminders без выбора пользователя.
+Mini App не имеет прямого HealthKit/Health Connect доступа. Акселерометр Telegram не является фоновым шагомером и не даёт доступ к истории Apple Health. Сначала полноценный self-report, затем **проверяемый мост**, затем при необходимости native companion.
 
-## 5. HealthKit — Phase 5, после core correctness
+### Shortcuts bridge
 
-Initial scope: шаги и выбранные workouts. Данные сна/другие типы — позднее по конкретной функции. HealthKit используется для fitness-части продукта, с понятной целью и permissions.
+Apple Shortcuts включает Find Health Samples и умеет отправлять JSON в HTTP API; из этого следует возможность исследовать импорт выбранных данных без собственного iOS-приложения. Это архитектурный вывод, не гарантия корректного подсчёта шагов/доступности всех workouts или автономной фоновой работы. [Health samples в Shortcuts](https://support.apple.com/en-euro/guide/shortcuts/apd3c845e881/ios), [HTTP requests](https://support.apple.com/en-lamr/guide/shortcuts/apd58d46713f/ios)
 
-Apple не раскрывает приложению, отказал ли пользователь именно в чтении: отсутствие samples не доказывает ни отказ, ни отсутствие активности. Запрашивать типы по потребности и использовать корректные usage descriptions. [HealthKit authorization](https://developer.apple.com/documentation/healthkit/authorizing-access-to-health-data), [Privacy](https://developer.apple.com/documentation/healthkit/protecting-user-privacy)
+Spikes до включения:
 
-Pipeline: on-device query → unit/time normalization → deduplicate sample IDs/source → match occurrence → EvidenceRecord summary → server completion policy. На сервер по умолчанию только подтверждение/агрегат для задания, а не полный raw health history. Отправка даже aggregate в AI — отдельный consent; для XP AI не нужен.
+1. Доступны ли нужные типы, source/sample ID, start/end/unit и корректный агрегат на реальном iPhone?
+2. Как получить итог шагов без двойного сложения перекрывающихся phone/watch samples? Сравнить результат с Apple Health. Если надёжный агрегат недоступен, оставить ручной подтверждённый дневной итог; не выпускать неверный автоматический счётчик.
+3. Работает ли запуск вручную и выбранная автоматизация при заблокированном экране, после перезагрузки, без сети/при отзыве permission? Зафиксировать факты; не обещать push из HealthKit через Shortcut.
+4. Показать какие агрегаты покидают телефон. Устройство сначала пробует отправку; failure остаётся видимым. Не создавать «0 шагов» из ошибки чтения.
 
-Шаги: использовать корректную агрегирующую query и источники; не складывать произвольно overlapping phone/watch samples. Workouts: unique sample ID, start/end/type; при совпадении с timer/self-report attach evidence к root. Автоматическое выполнение разрешается отдельно для конкретного habit: «отмечать прогулку при достижении 8000 шагов». Нет HealthKit — self-report доступен.
+Pairing в Mini App выдаёт отдельный ограниченный, отзывной credential для `health:import`/`calendar:busy_import`; не bot token, app refresh или LLM key. Secret передаётся в HTTP Authorization, не в query. Разделить connections и scopes; health credential не может исполнять любые domain commands. Настройка пользователем выполняется явно, credential не включается в публичный шаблон Shortcut.
 
-Удаление/исправление sample не означает автоматически «пользователь соврал»: пересмотреть evidence, fallback self-report/уточнение, корректировать только небольшой evidence delta при необходимости. Защита от поддельного клиента не абсолютна; label Device Verified — подтверждение источником, не судебное доказательство.
+### Нормализованный контракт доказательства
 
-## 6. Widgets, App Intents, Shortcuts, Action Button
+`source/provider`, `connection_id`, `source_record_id` при наличии, `record_kind`, `observed_at`, `started_at/ended_at` или local_date+zone, `amount`, `unit`, `revision`, `dedupe_key`, `provenance`, `completeness`.
 
-Widget/Lock Screen: next quest, 3/6 completed, Current Level; читать minimal snapshot в App Group, без чата/секретов. После logout/delete очистить общую snapshot. Обновления opportunistic; не обещать посекундную актуальность.
+- Workouts с достоверным source ID дедуплицировать по `(user,connection,source_record_id)`; без ID — content fingerprint + review неоднозначных совпадений, не обещать идеальную дедупликацию.
+- Daily aggregate заменяет предыдущую revision того же дня/источника, не добавляется повторно к итогу. Не складывать разные providers как независимые шаги.
+- Matching ищет уже существующий Activity root по типу/интервалу/occurrence. Timer/self-report + import одной тренировки → attach evidence, не второй reward.
+- Shortcut payload контролирует пользователь: `shortcut_import` — происхождение, не криптографическое доказательство устройства. Без специальной проверенной policy не повышать multiplier до device-verified.
+- Отдельное opt-in правило привычки: «предлагать/автоматически отмечать прогулку при условии …». Domain engine проверяет thresholds/объём/reward profile, затем делает ordinary command с одним reward root. ИИ для начисления не вызывается.
+- Sample correction/deletion — evidence revision, fallback self-report/уточнение, разрешённый delta/reversal; не обвинение пользователя. Отзыв доступа останавливает импорт, не обнуляет заработанную историю.
+- Передача health aggregate в AI требует отдельного consent. Raw health history не отправляется на сервер по умолчанию.
 
-App Intents: ShowToday, CaptureInbox, StartQuest, CompleteQuest, TalkToSystem. Для completion нужен определённый occurrence, объём/вариант; otherwise открыть confirmation UI. Widget intent пишет domain command в безопасную общую очередь с file/DB locking, основной sync reconciles. Siri/Shortcuts/Action Button используют intents на поддерживаемых устройствах; «Talk» открывает foreground voice session.
+### Другие adapters
 
-## 7. Live Activities
+Облачный fitness provider может дать часть workouts, если пользователь уже его использует. Доступ к шагам и типам данных проверять отдельно; выбор провайдера после запроса пользователя, scope/API spike и privacy review. Native companion позже даст прямые HealthKit queries и устойчивее управляемые permissions, но тоже подчиняется ограничениям ОС.
 
-Показ active focus timer, remaining/elapsed, название при разрешённой lock-screen privacy. Timer вычисляется по timestamp, Live Activity — отображение, не источник времени/XP. Завершение/отмена отражается из canonical/local timer state. Push tokens для Activity не смешивать с APNs device tokens. После force quit/expiration состояние синхронизируется при возврате.
+## 5. Action Button, Shortcuts, ярлыки и widgets — P5-04
 
-## 8. Уведомления
+Apple позволяет назначить Action Button запуск Shortcut. [Инструкция Apple](https://support.apple.com/en-my/guide/shortcuts/apdfea15680b/ios)
 
-MVP: локальные scheduled notifications для ближайших reminders. Система iOS доставляет локальные уведомления по запланированному trigger; приложение может отменить pending request при completion/reschedule. [Apple local notifications](https://developer.apple.com/documentation/usernotifications/scheduling-a-notification-locally-from-your-app)
+Без собственного native app можно дать инструкции для Shortcut, открывающего Telegram deep link на Today/capture/voice. На поддерживаемом iPhone пользователь сам назначает кнопку. Переход не исполняет completion автоматически. Позже scoped action endpoint принимает конкретную occurrence/variant/actual amount с подтверждением и idempotency, а не свободный запрос «сделать всё».
 
-Реестр `notification_key = target_id + reminder_kind`, revision включает актуальное время. При переносе отменить старое и установить новое; completed/excused/cancelled отменяют reminder. Уведомления не считаются источником истины о статусе задачи.
+[Shortcuts widget](https://support.apple.com/en-my/guide/shortcuts/apd029b36d05/ios) — набор быстрых действий. Ярлык Telegram — запуск Mini App. Ни один не изображается как наш полноценный автоматически обновляемый виджет персонажа. В боте — компактная обновляемая карточка дня; Mini App — настоящий Character screen. Home-screen shortcut Telegram проверяется по capabilities, добавляется только по выбору пользователя.
 
-Дедупликация local/remote: scheduled quest reminders принадлежат локальному scheduler. APNs в MVP служит для sync hints/редких server-origin событий другого типа; не посылать одновременно remote fallback для того же локального reminder без explicit ownership/ack protocol. Несколько устройств выбирают primary reminder device; это настройка.
+## 6. Таймер и Live Activities — P5-05
 
-Defaults: quiet hours по сну; максимум 4 proactive уведомления в день, кроме явно созданных time reminders; minimum suggestion ≤1/day, review ≤1/day. Отсутствие реакции снижает частоту предложения, не повышает её. Decay alerts — off по умолчанию, один при изменении статуса, отключены в Protection. Lock screen по умолчанию «Напоминание Системы», без чувствительного текста.
+На Telegram этапе: foreground таймер по timestamps, сохранение состояния, возобновление с уточнением спорного интервала, серверное reminder о плановом окончании. Background JS не используется как точные часы или источник XP. Нельзя гарантировать сообщение ровно в секунду окончания либо доставку без сети.
 
-BackgroundTasks/APNs не гарантируют точный запуск кода в нужную минуту; day-close живёт на сервере, а app обновляет локальные данные при доступной возможности. [Apple background strategies](https://developer.apple.com/documentation/backgroundtasks/choosing-background-strategies-for-your-app)
+Собственная Live Activity/Dynamic Island требует native ActivityKit/WidgetKit интеграции; сайт в Telegram её не заменяет. [ActivityKit](https://developer.apple.com/documentation/activitykit)
 
-## 9. Apple Watch — Phase 6
+Если практика покажет, что это существенно, следующий вариант — небольшой iOS companion для таймера/health/widgets. Общие user ID, APIs, Activity roots и receipts сохраняются. Его сборка/подпись/доставка действительно требуют Apple toolchain и отдельного этапа. Не тормозить Telegram релизы ожиданием companion.
 
-Companion после стабильного iPhone: next quest, timer, короткий capture, completion и selected workout evidence. Собственные pending commands с тем же idempotency; WatchConnectivity не гарантирует немедленную доставку. Standalone watch backend/auth отдельный scope; не добавлять в MVP.
+## 7. Уведомления и приватность каналов
+
+Основной transport — бот, правила [14](14-telegram-platform.md). В PWA возможен web push при поддержке и разрешении; native local notifications сохраняются только как будущий adapter. Нет гарантированного фонового выполнения WebView.
+
+Бот/сообщения обрабатываются инфраструктурой Telegram; нельзя переносить обещания о полностью локальном или end-to-end хранении на этот канал. Пользователь может отключить содержательные reminders, voice, внешние integrations и AI, продолжая ручной цикл. Backend deletion не гарантирует удаления всех копий сообщений/файлов у Telegram и providers; описать реальные доступные действия перед публичным запуском.
+
+## 8. Порядок без потери ядра
+
+Полный основной MVP → voice notes → ICS + quick access → busy/health spikes → выбранные прошедшие проверки bridges → PWA при потребности в offline → realtime/companion по измеренной пользе. Независимые малые улучшения, например открытие с Action Button, можно включать раньше после работающего auth и client routing. Advanced RPG/планирование не ждут подключения HealthKit.

@@ -1,4 +1,6 @@
-# 07. iOS, экраны и пользовательский опыт
+# 07. Telegram Mini App: экраны и пользовательский опыт
+
+Имя файла сохранено для совместимости ссылок. Спецификация относится к web UI; native дизайн находится в историческом архиве. Главный интерфейс — Mini App, бот дополняет его быстрыми действиями.
 
 ## 1. Навигация
 
@@ -19,17 +21,17 @@ flowchart LR
   SET[Настройки] --> MEM[Память / данные / приватность]
 ```
 
-Deep links: `systemapp://quest/{id}`, `/goal/{id}`, `/review/{period}`, `/inbox`, `/voice`. Ссылки проверяют аккаунт/существование; внешняя ссылка не подтверждает действие автоматически.
+Deep links Telegram: `https://t.me/<bot>/<app>?startapp=<opaque_route>` для выбранного launch mode. Payload — короткая ссылка на экран/серверный route descriptor, без токенов сессии и чувствительного текста. Backend после auth проверяет owner/существование; переход не подтверждает действие. Browser/PWA adapter использует свои обычные routes. BackButton закрывает sheet/возвращает на предыдущий экран, перед выходом при несохранённом draft — доступный closing confirmation.
 
 ## 2. Onboarding — активация Системы
 
-Последовательность: welcome → privacy summary → локальный профиль/вход → стиль общения → график и protected time → одна цель → baseline/результат → draft roadmap → today plan.
+Последовательность: welcome → privacy summary → проверенный Telegram вход/сохранённый draft → стиль общения → график и protected time → одна цель → baseline/результат → draft roadmap → today plan.
 
 Интервью прогрессивное: 5–10 минут до первого полезного плана как целевой ориентир; необязательные детали собираются позже. Каждый шаг сохраняется, Back не стирает ответы, можно перейти на ручную форму. Вопросы объединять по смыслу, не выдавать анкету из 50 пунктов за раз.
 
 Первое объяснение Character: «Показатели отражают прогресс, зафиксированный с начала использования. Твои уже имеющиеся навыки учитываются при подборе заданий». Не говорить, что человек начинает жизнь с нуля.
 
-Разрешения: уведомления после первого reminder; микрофон при голосе; календарь/HealthKit при включении соответствующей функции. Отказ не блокирует приложение.
+Разрешения: сообщения бота после первого reminder; микрофон только при записи в Mini App; календарь/здоровье при явном включении внешнего bridge. Voice message в чате записывает сам Telegram. Отказ не блокирует приложение.
 
 ## 3. Сегодня
 
@@ -51,7 +53,7 @@ QuestCard: title, goal reason, start/duration, difficulty, reward estimate, norm
 
 Показать «Почему я это делаю», Goal → Milestone → Quest, критерий успеха, normal/minimum, checklist, навыки/характеристики, estimated XP breakdown, историю переносов, подтверждение.
 
-Timer state machine: idle → running ↔ paused → finished; cancel не означает completed. Countdown от monotonic clock, данные сохраняются при каждой смене состояния и периодически без записи каждую секунду. После прерывания/убийства процесса восстановить elapsed и запросить спорный интервал. Завершение таймера предлагает записать фактический результат.
+Timer state machine: idle → running ↔ paused → finished; cancel не означает completed. В активном документе countdown использует monotonic clock и timestamps; после background нельзя полагаться на JS ticks. Данные сохраняются при каждой смене состояния и периодически без записи каждую секунду. После прерывания/убийства процесса восстановить elapsed и запросить спорный интервал. Завершение таймера предлагает записать фактический результат.
 
 Completion sheet: нормальная/минимальная/частичная версия, фактический объём, optional note; self-report default. Unknown duration не подставлять молча. Undo доступен из receipt/history; влияет на ledger по контракту.
 
@@ -99,20 +101,30 @@ BYOK скрыт в public build и не входит в MVP. Персональ�
 
 Направление: почти чёрные поверхности, холодный cyan/blue, немного violet, тонкие рамки и умеренное свечение. Свой silhouette, icon set и композиция; не переносить интерфейс/ассеты Solo Leveling.
 
-Исходные tokens (проверить фактический контраст в P1-08): background `#080B12`, surface `#111827`, elevated `#182235`, text `#EAF2FF`, secondary `#A4B3C7`, accent `#62D9FF`, violet `#AA9CFF`, success `#66D7A5`, warning `#F3C56B`.
+Исходные tokens (проверить фактический контраст в T-03a/P1-08): background `#080B12`, surface `#111827`, elevated `#182235`, text `#EAF2FF`, secondary `#A4B3C7`, accent `#62D9FF`, violet `#AA9CFF`, success `#66D7A5`, warning `#F3C56B`.
 
-Компоненты: SystemPanel, QuestCard, MainQuestCard, XPBar, RankBadge, StatRow, SkillRow, SystemCore, PlanDiffCard, RewardReceipt, EmptyState, SyncBanner, ConfirmationSheet. Tokens: spacing 4/8/12/16/24/32; rounded corners 12/20; touch area как минимум 44pt; основной текст системным шрифтом с Dynamic Type; monospaced только короткие числа/статусы.
+Компоненты: SystemPanel, QuestCard, MainQuestCard, XPBar, RankBadge, StatRow, SkillRow, SystemCore, PlanDiffCard, RewardReceipt, EmptyState, SyncBanner, ConfirmationSheet. Tokens: spacing 4/8/12/16/24/32; rounded corners 12/20; touch area как минимум 44 CSS px; основной текст системным шрифтом, относительные размеры и масштабирование; monospaced только короткие числа/статусы.
 
-Motion: небольшие появления 150–250ms; celebration до 1.5s; нет бесконечного тяжёлого particle background. Reduce Motion отключает scanning/parallax/particles; звук и haptics независимо отключаемы. Голубой цвет не единственный индикатор completed; label/icon обязательны.
+Motion: небольшие появления 150–250ms; celebration до 1.5s; нет бесконечного тяжёлого particle background. `prefers-reduced-motion` и пользовательский переключатель отключают scanning/parallax/particles; звук и haptics независимо отключаемы. Голубой цвет не единственный индикатор completed; label/icon обязательны.
 
 ## 11. Доступность и производительность
 
-VoiceOver читает связь задачи с целью, состояние, minimum и команды; декоративный силуэт скрыт для accessibility. Большой шрифт не обрезает действия; charts имеют текстовый эквивалент. Светлая тема может быть позже, но high contrast/readability в тёмной обязательны.
+Семантические HTML controls/ARIA позволяют VoiceOver/TalkBack читать связь задачи с целью, состояние, minimum и команды; декоративный силуэт скрыт для accessibility. Большой шрифт не обрезает действия; charts имеют текстовый эквивалент. Светлая тема может быть позже, но high contrast/readability в тёмной обязательны.
 
-Engineering targets до измерений: local Today first meaningful content <1s на целевом устройстве; local completion feedback <100ms; list scrolling без тяжёлой sync на main thread. Не обещать цифры до Instruments/device tests. Battery: таймер не пишет в БД каждую секунду, анимации паузятся вне видимости, network batching.
+Engineering targets до измерений: local Today first meaningful content <1s на целевом устройстве; local completion feedback <100ms; list scrolling без тяжёлой sync на main thread. Не обещать цифры до browser profiling и реальных Telegram device tests. Цель плавности — 60fps, упрощение эффектов на слабом устройстве. Fullscreen/haptic — улучшения при поддержке, не условия доступа к кнопкам. Battery: таймер не пишет в БД каждую секунду, анимации паузятся вне видимости, network batching.
 
 ## 12. Состояния, которые обязаны иметь дизайн
 
 Fresh install, no goals, rest day, permission denied, no network, expired login, AI budget exhausted, ambiguous voice, stale proposal, partial sync, conflicting edit, old app schema, long absence, protection, archived goal, deleted deep link, very long Russian text, accessibility text size, restored app after crash.
 
-По этим состояниям создать SwiftUI previews и screenshots в Phase 1–3; сквозные device tests перечислены в документе 11.
+По этим состояниям создать web state fixtures и screenshots в Phase 1–3; сквозные device tests перечислены в документе 11.
+
+## 13. Погружение внутри Telegram
+
+- Fullscreen запросить после понятного пользовательского действия, не блокировать обычный viewport при отказе. Учитывать одновременно Telegram safe/content-safe areas, keyboard и изменения viewport; дважды не прибавлять один inset.
+- CSS tokens адаптируют контраст и chrome под тему Telegram; тёмный System theme остаётся осознанным режимом. Системная кнопка закрытия не перекрывает Complete.
+- SVG silhouette/skill tree, лёгкие CSS transitions и короткая celebration создают RPG-подачу. Тяжёлый 3D/бесконечные particles не обязательны атмосфере. Звуку нужен opt-in и допустимый user gesture; при background остановить animation/audio.
+- Today/Character остаются читаемыми без эффектов. Focus trap в modal, возврат focus, keyboard navigation Desktop, текстовые аналоги графиков обязательны.
+- Целевой initial JS budget ≤300 KiB gzip без необязательных voice/chart модулей; проверить измерением после scaffold. Lazy loading advanced screens, версия assets, local fonts с fallback. Это начальный engineering budget, не измеренный результат.
+- Бот показывает короткую карточку и «Открыть Систему», а большие roadmap/Character/PlanDiff живут в Mini App. Цвета и речь едины, возможности канала честно различаются.
+- Pending completion: «Сохранено на устройстве, ждёт связи» только после успешной local transaction. До server receipt запрещено показывать подтверждённый новый Level.

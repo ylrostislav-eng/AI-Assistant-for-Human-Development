@@ -2,7 +2,7 @@
 
 Сгенерировано `python3 docs/validation/check_architecture.py --write-report`.
 
-Это проверка формул архитектуры. Production engine, rolling-window replay, iOS, API и базы данных ещё не реализованы и этим отчётом не проверяются.
+Это проверка формул архитектуры. Production engine и rolling-window replay ещё не реализованы. Частичный backend проверяется отдельными тестами; этот отчёт не проверяет API/БД, Telegram, клиент или доставку уведомлений.
 
 ## Сроки роста
 

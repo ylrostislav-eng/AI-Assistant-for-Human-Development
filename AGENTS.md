@@ -2,14 +2,14 @@
 
 ## Назначение
 
-Создаём персональную ИИ-Систему развития по `docs/source/original-concept.ru.md`. Пользователь подтвердил стратегию: сначала для себя, затем публичный продукт. Сейчас подготовлена документация; реализация приложения не начата.
+Создаём персональную ИИ-Систему развития по `docs/source/original-concept.ru.md`. Пользователь подтвердил стратегию: сначала для себя, затем публичный продукт. Существует частичный backend: migrations/RLS/sessions/commands/jobs/quest states/user-day math. Telegram client/auth и production XP engine ещё не реализованы. Актуальные статусы и найденные дефекты — docs/13-handoff.md и docs/15-backend-review.md.
 
 ## Порядок начала работы
 
 1. Прочитать актуальную задачу пользователя, этот файл, `docs/13-handoff.md`, `docs/00-product-and-decisions.md` и `docs/10-implementation-plan.md`.
 2. Прочитать спецификации затрагиваемых модулей. Проверить файлы и git diff: наличие плана не означает наличие реализации.
 3. Выбрать ограниченную задачу из плана, совпадающую с поручением пользователя. Выполнить её с проверками и обновить handoff. Если пользователь поручил целую фазу, довести всю фазу до критериев готовности.
-4. При новом поручении начать разработку переходить к P0-01; не запрашивать повторное разрешение на уже порученную работу. Документация сама по себе не является заданием реализовать все фазы.
+4. При общем поручении продолжить разработку брать следующую задачу из актуального handoff (после аудита — T-00a), а не начинать уже выполненный P0-01 заново; не запрашивать повторное разрешение на уже порученную работу. Документация сама по себе не является заданием реализовать все фазы.
 
 ## Неприкосновенные свойства продукта
 
@@ -33,10 +33,20 @@
 - Идентификаторы, типы статусов, единицы измерения и схемы берутся из контрактов. XP хранить в целых milli-XP, не binary float.
 - Версии контрактов, правил, prompt, baseline и policy сохранять. Изменение баланса не переписывает историю молча.
 - Сначала meaningful tests для инвариантов изменяемого движка, затем реализация. Для текста и простых визуальных правок достаточно соответствующей проверки.
-- Тесты Swift/iOS запускать на macOS/Xcode. В Linux честно указывать, что сборка iOS не проверена.
+- Mini App проверять browser tests и отдельно реальными Telegram clients: browser mock не доказывает offline launch, SecureStorage, notifications или mic. Mac не является gate Telegram. Только будущие native companion tests требуют macOS/Xcode.
 - После изменения контракта обновить потребителей, fixtures и спецификацию. При изменении архитектуры обновить реестр решений в `docs/00-product-and-decisions.md`.
 - Не добавлять новые сервисы и библиотеки без конкретной необходимости. Фиксировать версии после проверки совместимости; не угадывать актуальные API.
-- Не считать TestFlight/App Store, provisioning, доступность модели, оплату облака или production secrets уже настроенными.
+- Не считать bot/Main Mini App configuration, webhook/HTTPS hosting, доступность модели, оплату облака или production secrets уже настроенными. Для будущего native companion отдельно проверять provisioning/TestFlight.
+
+## Правила Telegram-разработки
+
+- Читать `docs/14-telegram-platform.md` перед клиентом/auth/bot; `docs/15-backend-review.md` перед изменениями серверного foundation. Сначала закрыть соответствующие T-00, не копировать известные дефекты в новый adapter.
+- Главный UI — Mini App с пятью вкладками; бот — быстрые действия/voice/reminders. Все каналы используют один domain API/CommandBus/Activity root; запрещены отдельные «баллы бота».
+- Проверять raw initData сервером; initDataUnsafe/username/client user_id не являются identity proof. Webhook проверяет отдельный secret и update dedupe. Bot/LLM keys не попадают в bundle, Vite public env, чат или логи.
+- Сохранить локальный command journal в IndexedDB. Не обещать cold offline launch Telegram или вечную сохранность browser storage. PWA — optional adapter того же UI, со своим проверенным auth.
+- Telegram callbacks, AI и Mini App обязаны передавать одинаковые semantic target/version. Hash включает kind; payload schemas закрыты; stale lease не может изменить новую job attempt.
+- Direct HealthKit/EventKit/WidgetKit/ActivityKit из Mini App не заявлять. ICS/Shortcuts bridges проходят device spikes; Shortcut import не равен device-verified evidence. `docs/08-voice-and-apple.md` и `docs/07-ios-and-experience.md` сохраняют старые имена, но содержат актуальную Telegram-спецификацию.
+- `docs/archive/` и старые коммиты — история, не активный план. Реализованные routes перечисляет OpenAPI; проектируемые endpoints в документах не считаются существующими.
 
 ## Работа в пределах остатка лимита
 

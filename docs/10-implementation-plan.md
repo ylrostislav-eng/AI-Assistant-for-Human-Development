@@ -1,181 +1,158 @@
-# 10. Пошаговый план разработки: Phase 0–6
+# 10. План разработки Telegram-системы
 
-## 1. Как исполнять план
+Актуально: 2026-09-16. Этот план заменяет прежнюю последовательность iOS. Исторические таблицы сохранены в [архиве](archive/pre-telegram-2026-09-16.txt); их незакрытые Mac-гейты не блокируют Telegram. Статус кода — [13](13-handoff.md), требования платформы — [14](14-telegram-platform.md), исправления — [15](15-backend-review.md).
 
-Порядок обязателен по зависимостям, а не по длине файла. Каждая задача заканчивается reviewable результатом, meaningful checks и записью в `13-handoff.md`. Одна модель может выполнять несколько связанных задач по поручению пользователя, но не отмечает готовыми зависимости, которые только описаны.
+## 1. Как исполнять
 
-Названия файлов ниже — планируемые. Пути backend относительны `services/backend/`, Swift — `apps/ios/`; полное дерево в документе 01. Контракты и коэффициенты лежат в `packages/contracts/` и `packages/rules/` — перенесены из `docs/contracts/` в P1-01 вместе со ссылками. Не поддерживать две расходящиеся канонические копии.
+Каждая строка — самостоятельная задача, не объявление готовности. Сначала зависимость и meaningful regression test, затем реализация и проверка. Одна фаза готова только после её exit gate. API/worker сохраняются; не пересоздавать проект. Текущий запрос пользователя закрывается аудитом и документацией; следующие задачи реализации выполняются по поручению.
+
+План различает: **технический demo**, **ручное ядро**, **полный продуктовый MVP**, **публичный релиз**. Наличие webhook и кнопки completion не доказывает полный цикл Системы.
 
 ```mermaid
 flowchart LR
-  P0[Phase 0: решения и spikes] --> P1[Phase 1: ручное ядро + offline]
-  P1 --> P2[Phase 2: текстовая Система]
-  P2 --> P3[Phase 3: детерминированная RPG]
-  P3 --> PILOT[Личный пилот 4 недели]
-  PILOT --> P4[Phase 4: голос]
-  P4 --> P5[Phase 5: Apple integrations]
-  P5 --> P6[Phase 6: advanced intelligence]
+  A[T-00: исправления сервера] --> B[T-01/05: вход и platform spike]
+  B --> C[T-06 + T-02: чтение и бот]
+  C --> D[T-03: Mini App + local journal]
+  D --> E[Phase 1: ручное ядро]
+  E --> F[Phase 2: AI + Recovery]
+  F --> G[Phase 3: RPG + полный MVP]
+  G --> H[4 недели личного пилота]
+  H --> I[Голос / bridges / PWA / advanced]
+  H --> J[Public beta gate]
 ```
 
-Публичная beta — отдельный release gate после успешного личного пилота; голос и все Apple-интеграции не обязательны для проверки базовой ценности, но нужны для полной концепции.
+T-04 hosting можно подготовить раньше для synthetic device-tests, но первый учёт реальных данных требует T-00, безопасного auth, Activity/ledger P3-02 и проверенного восстановления; до этого — synthetic data. Голос и Apple bridges не являются зависимостью advanced RPG.
 
-## 1а. Пересмотр плана после ADR-013 (Telegram вместо iOS)
+## 2. Что уже есть и как перенесены прежние ID
 
-Дата: 2026-09-16. Таблицы ниже написаны для нативного клиента и сохраняются: при возврате к iOS они снова становятся актуальными. Для текущего пилота действуют изменения из этого раздела.
+| Прежний ID | Фактический результат | Что осталось |
+|---|---|---|
+| P0-00, P0-01a/b | Архитектура, окружение, backend pins, smoke | Native build снят для пилота; web toolchain ещё проверить |
+| P0-04 | Threat model, RLS и sessions prototypes, secret scan | Telegram trust boundaries и фактический deploy |
+| P1-01 | Миграции 001–008, схемы envelope, OpenAPI фактических routes | Закрытые payload schemas/DTO, новые domain tables по задачам |
+| P1-02 | Synthetic dev login, access/refresh/revoke | Реальный Telegram login T-01; Apple proof больше не пилотный gate |
+| P1-03 | CommandBus, receipts, batches, outbox/jobs/worker | T-00a/b; bootstrap/pull; handlers reminders/day-close |
+| P1-06 | Template/occurrence команды, state transitions | ActivityRecord/объём/Undo, schemas, ручной UX; не весь P1-06 |
+| P1-07 | CalendarMath/ensureUserDay | T-00c/d, Scheduler, reminders, закрытие дня; не весь P1-07 |
+| P1-04 | Клиентская реализация отсутствует | Сохранён: IndexedDB journal вместо Swift SQLite, T-03 |
+| P1-08 | Клиента нет | Перенесён в web UI, T-03 и последующие экраны |
 
-| Задача исходного плана | Что с ней теперь |
-|---|---|
-| P0-01, критерий «минимальная сборка iOS» | **Снят для пилота.** Mac не требуется; toolchain backend зафиксирован и проверен |
-| P0-02, spikes `ios-offline` и `voice-capability` | Заменяются одним spike Telegram: авторизация через `initData`, доставка уведомлений ботом, ограничения Mini App |
-| P0-03, выбор провайдера моделей | Без изменений; нужен реальный ключ |
-| P1-04, локальная база и offline-очередь на клиенте | **Отменено для пилота.** Mini App без сети не работает; серверная очередь команд и идемпотентность остаются и понадобятся при возврате к нативному клиенту |
-| P1-08, экраны SwiftUI | Заменяется на бот и Mini App: сегодня, цели, задание, профиль |
-| P1-02, проверка Apple identity token | **Снята.** Вход через Telegram: платформа передаёт подтверждённые данные пользователя |
-| Phase 4, голос через WebRTC Realtime | Заменяется голосовыми сообщениями Telegram с расшифровкой. Постоянный дуплексный канал в Mini App не нужен |
-| Phase 5, интеграции Apple (HealthKit, EventKit, виджеты) | **Отложены до возврата к нативному клиенту.** Занятость и результаты вводятся вручную |
+## 3. Исправления до реальных данных
 
-Новые задачи пилота:
+| ID | Scope / файлы | Проверки и готовность |
+|---|---|---|
+| T-00a | `shared/commands`, `modules/sync/routes`, quest parsers, contracts | Hash учитывает kind/семантику; top-level version/aggregate проверяются; closed payload schemas; неизвестные/prototype keys отвергаются; owner/device/dependencies не игнорируются. Все кейсы R1/R2/R6 из аудита |
+| T-00b | `modules/sync/worker`, новая migration lease ownership, worker tests | Claim только свободной capacity; lease token CAS; late A не завершает B; expiry/max attempts/dead-letter/renewal; два workers |
+| T-00c | `shared/time/user-day`, unit fixtures | Все минуты DST gap → первая допустимая граница по policy; fold; 30-minute change; non-hour zones; точность offset |
+| T-00d | `modules/scheduling/user-days`, policy epochs/migration | Смена boundary/timezone применяется в определённый момент; существующий интервал не раздваивается; concurrent changes; один credited bucket |
+| T-00e | `app.ts`, `worker.ts`, error translation, log tests | Raw PG/provider errors не раскрывают payload/credentials; инфраструктурная ошибка refresh не маскируется под неверный token |
 
-| ID | Что сделать | Зависит от | Проверки | Готовый результат |
-|---|---|---|---|---|
-| T-01 | Проверка `initData` Telegram, сопоставление с `users`, выпуск сессии | P1-02 | Подделанная подпись, просроченные данные, чужой пользователь | Вход без Apple; синтетический вход остаётся только для разработки |
-| T-02 | Бот: команды дня, отметка выполнения, напоминания через обработчик заданий | T-01, P1-03 | Повторная доставка, недоступность Telegram, отключённый бот | Основной цикл без интерфейса, прямо в переписке |
-| T-03 | Mini App: сегодня, цели, задание, профиль | T-01, P1-05, P1-06 | Медленная сеть, отказ сети, узкий экран | Видимая система, которой можно пользоваться ежедневно |
-| T-04 | Развёртывание на Railway с webhook и HTTPS | T-02 | Реальный webhook, перезапуск, ротация секрета бота | Пилот работает без запущенного вручную процесса |
+T-00a — **следующая небольшая задача**. T-00b–e закрываются отдельно; не объявлять весь сервер готовым по исправлению одной строки. Старые миграции не переписывать; upgrade существующей БД и old receipts требуют явной compatibility policy.
 
-Порядок: T-01 → T-02 → T-03 → T-04. Бот раньше Mini App намеренно: он даёт полный цикл в переписке и позволяет начать ежедневное использование до появления интерфейса.
+## 4. Telegram foundation и первая вертикаль
 
-## 2. Phase 0 — Architecture
+| ID | Scope / место | Зависимости | Проверки / готовый результат |
+|---|---|---|---|
+| T-01 | Identity mapping, `POST /auth/telegram`, installation/session binding | T-00a/e | Forged/expired/future/duplicate initData, allowlist, replay, account isolation, secure storage fallback; реальный launch smoke отдельно |
+| T-05 | Одноразовый platform spike и capability report | T-01; тестовый бот/HTTPS/телефон для device части | Fullscreen/safe areas/back, IndexedDB close/reopen/offline/kill, SecureStorage, home shortcut, mic. Указать observed failures, выбрать поддерживаемые clients |
+| T-06 | `GET /bootstrap`, `GET /sync/pull`, bounded Today/goals reads, OpenAPI | T-00a, P1-03 | Consistent snapshot+cursor, batches без дыр, paging upper bound, 410/rebootstrap, два tenants |
+| T-02 | Webhook inbox, sender mapping, `/start`/`today`/`capture`, action tokens | T-01, T-06, T-00b/e | Duplicate/forged update, stale/foreign callback, response loss, blocked bot, 429; commands используют тот же bus. Completion подключать после P1-06 |
+| T-03a | `apps/miniapp`: React/TS/Vite scaffold, adapters, design tokens, пять вкладок | T-01/05/06 | Login→Today→Goal/detail; real DTO, empty/error/auth states, accessibility, responsive safe areas; mocked demo отдельно от production |
+| T-03b / P1-04 | IndexedDB repositories/outbox, SyncCoordinator, conflict inbox | T-03a, T-00a, T-06 | Commit-loss retry, close/reopen, pending preservation, account separation, denied/quota storage, dependent commands; offline scope честно отражён |
+| T-04 | Hosting API/worker/PostgreSQL + static Mini App, TLS/webhook, secrets/backup/runbooks | T-01/02, T-00b/e | Production dev-login off, migration/runtime/worker roles, live readiness, restart, bot secret rotation, restore; synthetic smoke до реальных данных |
 
-Цель: снять технические неопределённости до большой реализации. Текущий пакет закрывает документационную часть, но device/API spikes пока не выполнялись.
+Railway указан как кандидат, а не уже выбранный оплаченный сервис. Сначала подготовить конкретную конфигурацию и ограничения (region, persistence, always-on worker, backups), затем выполнять фактическое подключение/публикацию в разрешённом scope. Dockerfile/compose до проверки не считать production-ready. Не включать secrets в Vite public env.
 
-| ID | Что сделать / файлы | Зависит от | Данные/доступ | Проверки | Готовый результат |
-|---|---|---|---|---|---|
-| P0-00 | Концепция, спецификации, `AGENTS.md`, drafts, математическая проверка | Исходный файл | Все 77 разделов, решение «сначала для себя» | Ссылки, coverage, formulas | Этот архитектурный пакет; без app code |
-| P0-01 | Зафиксировать toolchain/версии в `docs/toolchain.md`; root workspace config | P0-00 | Доступная macOS/Xcode, Node LTS, PostgreSQL | Swift empty app build; backend smoke; package compatibility | Воспроизводимое окружение без фиктивных «latest» |
-| P0-01a | Инвентаризация среды, `scripts/check_environment.py`, `docs/toolchain.md` | P0-00 | Доступные CLI | Реальные версии, docs/node profiles, ожидаемый отказ iOS на Linux | Завершённый аудит; не заменяет сборку приложения |
-| P0-01b | Pins/lockfiles, backend/database smoke, минимальная сборка iOS | P0-01a | Package access, test DB, Mac/Xcode для iOS | Install/typecheck/health/SQL transaction/iOS build | Закрыты оставшиеся критерии P0-01 |
-| P0-02 | Одноразовые spikes `spikes/ios-offline`, `spikes/voice-capability`; UX wireframes | P0-01 | iPhone/Mac; microphone/calendar dev permissions по потребности | DB transaction after kill, notification reschedule, native WebRTC feasibility | ADR о storage/voice; spike code не объявлен production |
-| P0-03 | Provider contract spike, `docs/model-evaluation.md` | P0-01 | Реальный backend API key и выбранный usage budget при поручении API работ | Русский prompt, strict tool, timeout, refusal, cost capture | Проверенные model IDs/config; секрет не в git |
-| P0-04 | Threat model review, auth/tenant prototype, deployment sketch | P0-01 | Личный Apple subject, dev signing когда доступно | Два synthetic tenants, isolation, key scan | Понятный путь auth и personal pilot hosting |
-| P0-05 | Wireframe review Today/Goal/PlanDiff/Character; end-to-end fixture set | P0-00,02 | English goal, 2 недели графика, offline failure | Обойти все ключевые состояния UI; проверить критерии | Закреплённые contracts v1 и список рисков |
+## 5. Phase 1 — ручное ядро
 
-Exit gate: версии/контракты согласованы; engine formulas проходят sanity; понятен native voice path; известен способ собрать iPhone и backend. Недоступный Mac не препятствует backend/docs, но iOS build gate нельзя отметить пройденным.
+| ID | Что завершить | Зависимости | Критерий |
+|---|---|---|---|
+| P1-05 | Profile/onboarding/baseline, Goals/Milestones/Projects/Metrics/Inbox | T-01, T-03, contracts | Создать/изменить цель и реальные критерии, продолжить onboarding, baseline не даёт XP |
+| P1-06 | ActivityRecord/root, actual duration/amount, variants, partial, timer, undo foundation | T-00a, P1-03 | Выполнение хранит факты; minimum только при принятом spec; unknown duration не выдумывается; duplicates не создают второй root; UI и бот согласованы |
+| P1-07 | Scheduler, availability/protected time, day/week/month, recurrence, day-close, reminders | T-00b/c/d, P1-05/06, T-02 | Дни не пересекаются, hard constraints, minimum/unscheduled, missed/excused, stale reminders отменены, no background JS dependency |
+| P1-08 | Закончить Today/Goals/Calendar/Character shell, Settings/Privacy и motion | T-03, P1-05…07 | Все manual действия, sync state, large RU text, screen readers; Character пока честно 0/недоступно без fake reward |
+| P1-09 | Export/delete, web/backend CI, deployment rehearsal | P1-02…08, T-04 | Export читается, delete/revoke не возрождаются replay, restore применяет deletion registry; ручной цикл 7 дней на устройстве с synthetic data |
 
-## 3. Phase 1 — Core MVP
+Exit: Goal → scheduled quest → сохранённая Activity; ручной перенос/minimum/partial/excuse, delayed sync и восстановление без двойного эффекта. Пока отсутствует production XP/AI, этап называется ручным ядром. До первого тестирования реальными данными выполнить P3-02 (ledger) и privacy/restore gate, как требует AGENTS.md. Phase 1 проверяется на synthetic fixtures.
 
-Цель: работающая ручная система целей, задач и календаря с backend/offline. **Это инженерное ядро, ещё не весь MVP §71.** Ранние reward screens могут показывать 0/недоступность функции; fake XP не выдаётся за реальный.
+## 6. Phase 2 — текстовая Система
 
-| ID | Что реализовать / файлы | Зависит от | Данные | Тесты | Definition of Done |
-|---|---|---|---|---|---|
-| P1-01 | `packages/contracts/openapi.yaml`, schemas; migrations 001 identity/profile/goals/quests/calendar/sync | P0 | Domain 02, time fixtures | Schema lint, migrate clean DB, FK/RLS constraints | Все Phase 1 endpoints имеют закрытые schemas |
-| P1-02 | `modules/identity`, `shared/auth`, Keychain adapter, account routing | P1-01 | Apple proof/dev synthetic identities | Forged/expired/replayed token, refresh rotation, two tenants | Реальный login + закрытый signup; dev bypass запрещён в release |
-| P1-03 | `shared/commands`, `modules/sync`, per-user counter, receipts/outbox/jobs | P1-01,02 | Command fixtures, duplicates | Timeout-after-commit, concurrent commits, cursor holes | Exactly-once business effect при повторяемой доставке |
-| P1-04 | Swift Data/SQLite/Migrations/Sync + local overlays; Repositories | P1-03 | Bootstrap, pending dependencies, tombstones | Offline edits, app kill, conflict, rebootstrap | Действия сохраняются и сходятся с сервером |
-| P1-05 | Profile/Onboarding; Goals/Milestones/Projects/Metrics; Inbox | P1-02,04 | Baseline, availability, success metrics | Resume onboarding, standalone quest, measured goal | Можно вручную создать цель и понятный путь |
-| P1-06 | Quests/Actions/Activity; Timer; states; undo/cancel groundwork | P1-03,04 | Normal/minimum, actual duration, day assignment | Partial→minimum→normal, duplicate, timer pause/reboot | Факты действий корректны; XP ещё не рассчитывается |
-| P1-07 | CalendarMath/Scheduler; day/week/month; ReminderCoordinator; day-close job | P1-05,06 | Busy windows, recurrence, timezone | DST, boundaries, hard conflicts, notification cancel | Посильный ручной/алгоритмический план и missed |
-| P1-08 | DesignSystem + Today/Goals/Character/Calendar shell; Settings/Privacy | P1-04…07 | UI state fixtures | Dynamic Type, VoiceOver smoke, no-network, long RU strings | Все основные действия доступны без ИИ; атмосфера System |
-| P1-09 | Export/delete path, pilot deployment scripts, backend/iOS CI | P1-02…08 | Synthetic 30-day user data | Export parse, deletion+restore replay, install/device smoke | Ручной цикл работает 7 дней на устройстве, CI реальный |
+| ID | Scope | Зависимости | Критерий |
+|---|---|---|---|
+| P0-03 | Bounded real provider spike, model IDs/budget/cost report | Рабочий backend; настроенный ключ | Русский ввод, strict tools, refusal/429/timeout/usage; версия SDK проверена |
+| P2-01 | AIProvider/OpenAI adapter, turn lifecycle/SSE для Mini App | P0-03, Phase 1 | Streaming/reconnect/cancel; бот получает bounded result, не поток каждого token |
+| P2-02 | ContextBuilder, read tools, factual cards, единая дата/зона | P2-01 | Relevant-only, two tenants, timestamps и цифры grounded |
+| P2-03 | ToolGateway/policy/proposals/PlanDiff, Telegram adapter | P2-02, T-00a | Все writes через CommandBus; prompt injection/XP bypass/stale proposal/duplicate tool заблокированы |
+| P2-04 | Goal interview/GoalPlanDraft, classifier/dynamic skills/rubrics | P2-03, P1-07 | Из понятной цели принят посильный roadmap, duplicate skill не создаётся |
+| P2-05 | Visible memory, DailyReview, Motivation policy | P2-02…04 | Forget/delete распространяется, цифры из backend, нет давления/унижения |
+| P2-06 | Recovery case/reason/capacity и изменение плана | P1-07, P2-03…05 | Болезнь/сон без долга; неизвестная причина не лень; нет recursive debt |
 
-Exit gate: manual Goal → task → calendar → completion → persisted Activity → offline sync; day-close/минимум/перенос/удаление корректны; нет cross-user доступа. Production XP и AI не имитируются.
+Exit: «Хочу английский» → принятый план → Today; «перенеси» меняет ровно один target; «не успеваю» предлагает выполнимый diff. Отключённый ИИ сохраняет manual core.
 
-## 4. Phase 2 — AI System
+## 7. Phase 3 — детерминированная RPG и продуктовый MVP
 
-Цель: полезный русский текстовый ассистент, который делает реальные допустимые изменения, а не только пишет советы.
+| ID | Scope | Зависимости | Критерий |
+|---|---|---|---|
+| P3-01 | Pure Progression Engine, integer milli-XP, rule versions | P1-06, принятые rubrics P2-04 | Golden/property: zero, split invariance, caps, no AI/IO |
+| P3-02 | Ledger migrations/service, reversals, replay/backfill | P3-01, T-00a…d | Retry/undo/evidence upgrade/concurrent caps/replay; один reward root |
+| P3-03 | Skill/stat mastery, allocations, levels/gates, hierarchy/merge | P3-02 | Conservation, parent не даёт второй reward, new skill = 0 |
+| P3-04 | Form/CurrentLevel/Rank/Streak/Protection/RecoveryDebt | P3-03, P2-06 | 365-day fixtures, rank hysteresis, sickness no penalty, Mastery no decay |
+| P3-05 | Web Character/Skill/history/reward receipts/celebrations | P3-01…04 | Confirmed/pending разделены, animation once, fallback motion; preview только при parity |
+| P3-06 | MVP audit и 4 недели личного пилота, balance/utility report | Phase 1–3, T-04 | Полный цикл, все 20 пунктов §71 в адаптации Telegram, costs/backups/нагрузка, закрытые критические дефекты |
 
-| ID | Что / файлы | Зависит от | Данные | Тесты | Готовность |
-|---|---|---|---|---|---|
-| P2-01 | `modules/ai/providers/AIProvider.ts`, `OpenAIProvider.ts`, turn/SSE lifecycle | P0-03, P1 | Model config, budgets, synthetic prompts | Stream, timeout, 429, cancel, tool result continuation | Реальный provider за interface, fallback manual |
-| P2-02 | `ContextBuilder`, roles/prompts, read tools, factual cards | P2-01 | User profile, goals, current schedule, versions | Relevant-only context, no other user data, correct date math | Ответы опираются на актуальные факты |
-| P2-03 | `ToolGateway`, policy/approval scopes, command adapters, PlanDiff UI | P2-02, P1-03 | Explicit intents, proposals, request IDs | Prompt injection, bogus XP args, stale approval, duplicate calls | Все mutations через policy+CommandBus |
-| P2-04 | Goal interview/GoalPlanDraft; dynamic skills/classifier | P2-03 | Baseline, time budget, skill taxonomy, rubrics | Vague goal clarification, duplicate skill, infeasible roadmap | За несколько шагов принята реальная программа |
-| P2-05 | Memory viewer/retrieval, DailyReview factual+AI, Motivation policy | P2-02…04 | 14/30 days synthetic facts, confirmed memories | Forget/delete propagates, false numeric claims, no shaming | Личный контекст и полезный review без всей переписки |
-| P2-06 | Basic Recovery cases+reason interview, plan recalculation | P1-07, P2-03…05 | Missed/excused/load, user reasons | Sick→no debt, unknown reason, capacity cap, no debt cascade | Плохой день приводит к посильному плану |
+Exit: Goal → AI Plan → Daily Quest → Completion → XP → Review → Adaptation. Локальные уведомления заменены ботом; SQLite — web journal; offline cold start не заявляется без device proof. Эти platform differences явно принимаются как ADR-014, а не скрываются под фразой «всё реализовано».
 
-Exit gate: «хочу английский» → interview → accepted goal plan → Today; «перенеси» меняет данные один раз; «сегодня не успеваю» выдаёт допустимый diff; refusal/error не превращается в ложный success. XP по-прежнему вычисляется только после Phase 3.
+## 8. Phase 4 — голос
 
-## 5. Phase 3 — Progression
+| ID | Scope | Проверки / готовность |
+|---|---|---|
+| P4-01 | Telegram voice download/ASR job/retention | Size/time/type limits, retries, duplicate update, audio cleanup, RU/noisy fixtures |
+| P4-02 | Transcript→intent→общий ToolGateway, quota/cost | Unknown amount/target, 429, command after cancel, injection, один effect |
+| P4-03 | Canonical text receipt + optional TTS | Озвученные факты совпадают с сервером; no raw audio retention by default |
+| P4-04 | Mini App foreground recording + fallback к voice бота | Реальные mic denial/background/call/network; manual text работает |
+| P4-05 | Необязательный browser realtime spike→ADR→реализация | Barge-in, session binding, one tool executor, reconnect/cost; отдельный release gate |
 
-Цель: вся детерминированная RPG-механика и полный MVP из исходной концепции.
+Зависимость P4-01…03: работающий T-02 и P2-03; широкое включение после основного пилота. Realtime не обязателен для voice notes.
 
-| ID | Что / файлы | Зависит от | Данные | Тесты | Готовность |
-|---|---|---|---|---|---|
-| P3-01 | `packages/rules/progression`, `progression/engine.ts`, decimal utilities | P1-06, P2-04 | v0.1 config, canonical activities, rubrics | Golden examples, split invariance, caps, zero input | XP pure engine без AI/IO |
-| P3-02 | ledger migrations/service, user transaction, reversals/replay | P3-01, P1-03 | Multi-device, late activities, evidence upgrades | Complete+retry+undo, concurrent caps, replay twice | Ledger authoritative, no double awards |
-| P3-03 | Skill/stat mastery, levels/gates, canonical hierarchy/merge | P3-02 | Allocation profiles, milestones/checkpoints | Conservation, no parent double count, merge/rename | Навыки появляются с 0 и растут по реальным действиям |
-| P3-04 | Form/CurrentLevel/Rank/Streak/Protection; RecoveryDebt projection | P3-03, P2-06 | 365-day timelines, maintenance targets | Decay/no-decay, rank hysteresis, pause, return, no sick penalty | Текущая форма меняется, история сохраняется |
-| P3-05 | Swift ProgressionPreview + shared golden fixtures; Character/Skill UI/celebrations | P3-01…04 | Canonical server snapshots and pending commands | Preview/reconcile parity, animations once, accessibility | Заработанный и pending XP различимы |
-| P3-06 | End-to-end MVP audit + 4-week personal pilot; balance report | P1…P3 | Реальное личное использование с согласиями | All MVP scenarios, backups, costs, no overload incentives | Главный цикл доказан; перечень исправлений завершён |
+## 9. Phase 5 — сохранение интеграций и offline
 
-Exit gate: все 20 пунктов §71 работают; профиль 0 → Goal → AI Plan → Quest → Completion → XP → Review → Adaptation; offline и повторные операции не нарушают reward. Pilot feedback может менять коэффициенты новой версией, но не произвольным текстом ИИ.
+| ID | Scope | Зависимости | Проверки / граница |
+|---|---|---|---|
+| P5-01 | ICS export/subscription | P1-07/09 | UID/revision/DST/cancellation, token revoke, реальный Calendar; one-way |
+| P5-02 | Busy-only Shortcuts/provider import, optional reminders mapping | P5-01, P2-03 | Partial snapshot, stale, permission/revoke, export-import loop; без Apple ID password |
+| P5-03 | Health Shortcuts spike + normalized evidence adapter | P3-02, explicit consent | Phone/watch duplication, source quality, sample corrections, no double XP; no automatic release при неверных шагах |
+| P5-04 | Home shortcut, Action Button/Shortcuts/widget quick actions | T-03, routing/auth | Supported/unsupported clients, locked phone, stale target, scoped credentials |
+| P5-05 | Решение о native companion для HealthKit/widgets/Live Activity | Реальная потребность, Mac отдельно | Не требуется Telegram MVP; native tests/provisioning при выбранном scope |
+| P5-06 | Тот же клиент как PWA, standalone auth, service worker | T-03b, P1-09, device spike | Offline cold start, update preserving journal, pairing replay/session swapping, eviction, optional push |
 
-## 6. Phase 4 — Voice
+Каждая integration включается независимо; отказ не блокирует ядро. P5-04 можно начать раньше остальных. Details: [08](08-voice-and-apple.md).
 
-| ID | Что / файлы | Зависит от | Данные/доступ | Тесты | Готовность |
-|---|---|---|---|---|---|
-| P4-01 | Native WebRTC dependency, AudioSessionManager, transport adapter | P0-02, P3 pilot | iPhone, headset, microphone permission | Audio routing, interruption, supported iOS/device | Стабильный звук без hardcoded main key |
-| P4-02 | Voice session backend, trusted call binding, sideband, quotas | P4-01, P2-03 | Provider config, session scope | Forged call ID, expiry, reconnect, budget limit | Session принадлежит ровно user/device |
-| P4-03 | Transcript/intent cards, tool bridge, spoken canonical receipts | P4-02 | Ambiguous/clear RU phrases | Duplicate completion, reschedule conflict, stop after commit | Голос реально меняет приложение один раз |
-| P4-04 | Fallback transcription/text, cost/latency/device regression | P4-03 | Noisy room, poor network, provider failure | Barge-in, call interruption, no audio retention | Доступный надёжный push-to-talk сценарий |
+## 10. Phase 6 — развитие и публичный продукт
 
-Exit gate: создание/перенос/завершение и перестройка дня голосом; отказ permission и сеть не ломают manual core; cost session контролируется.
+| ID | Scope | Готовность |
+|---|---|---|
+| P6-01 | Weekly/Monthly Review, pattern aggregates | 4+ недели фактов; small-sample uncertainty, актуальный denominator |
+| P6-02 | Deep memory/search, provenance/correction | Tenant фильтр до retrieval, consent/deletion, stale hypotheses |
+| P6-03 | Advanced Scheduler/automation/DifficultyScaling | Opt-in boundaries, hard constraints, rollback, manual overrides; внешние calendars необязательны |
+| P6-04 | Forecast/experiments | Comparable metrics, assumptions/ranges, insufficient-data state |
+| P6-05 | Skill Trees/Boss/avatar evolution | Реальные checkpoints, собственные assets, нет reward loopholes |
+| P6-06 | Public beta readiness | Pilot fixes, signup/rate limits, нагрузка, restore/deletion/support, регионы/возраст/условия, platform review |
+| P6-07 | Optional Watch/native extensions | Отдельное поручение, hardware/toolchain, общий command API |
 
-## 7. Phase 5 — Apple integrations
+Публичная beta может предшествовать необязательным Phase 4–6 функциям, если gate P6-06 выполнен и scope явно указан. Монетизация и платежи — отдельное решение с проверкой актуальных правил, не скрытая задача текущего плана.
 
-| ID | Что / файлы | Зависит от | Данные/доступ | Тесты | Готовность |
-|---|---|---|---|---|---|
-| P5-01 | EventKit adapter/mappings, busy import, selective export | P1-07, P3 | Calendars/permissions | Read-only, recurring edits, DST, external change, revoke | План учитывает выбранный Apple Calendar |
-| P5-02 | Reminders adapter, explicit mapping/complete proposals | P5-01, P2-03 | Reminder permission | Import loop, duplicate completion, deletion | Нет двойных задач/XP |
-| P5-03 | HealthKit queries, evidence matching, per-habit auto-complete | P3-02,04 | Steps/workouts opt-in | Phone/watch duplicates, absent data, revoked access, sample deletion | Подтверждение добавлено к правильной Activity |
-| P5-04 | Widget extension, App Group snapshot/queue, App Intents/Shortcuts | P3-05, P4 | Extension entitlements/device | Locked device, stale snapshot, two processes, logout | Capture/next quest/complete используют core commands |
-| P5-05 | Live Activity timer, Action Button intent path, privacy/device matrix | P5-04 | Supported iPhone, Activity capabilities | Timer after kill, expiry, lock privacy, intent retry | Полный удобный iPhone flow без фоновых обещаний |
+## 11. Definition of Done и работа с лимитом
 
-Exit gate: permissions optional; отключение любой integration не блокирует ядро; нет повторных rewards, циклов sync и раскрытия sensitive lock-screen текста.
+- Контракты/migrations/fixtures/consumers согласованы; нет production fake success.
+- Запущены meaningful проверки изменённого пути; device/API тесты с mocks не названы реальными.
+- Нет утечки user data/keys, bypass RLS/XP, потери pending из-за logout/rebootstrap.
+- Handoff: task ID, actual files, проверки, ограничения, следующий шаг. Чужой завершённый scope не переписывать исторически как отсутствующий.
+- Выбирать небольшой завершённый срез; до начала и конца читать usage при наличии инструмента, оставлять ~10 процентных пунктов резерва. Не начинать новый этап ради расходования остатка.
 
-## 8. Phase 6 — Advanced intelligence
+Fixtures: два tenants, два клиента одного пользователя (бот/Mini App), 14 дней расписания, 30 дней reviews, 365+ дней прогрессии, DST/travel, interrupted network, stale messages, duplicated evidence. Реальные данные нужны после correctness/privacy gate.
 
-| ID | Что / файлы | Зависит от | Данные | Тесты | Готовность |
-|---|---|---|---|---|---|
-| P6-01 | Weekly/Monthly Review, pattern aggregates, uncertainty labels | P3, 4+ недели данных | Factual history, consent | Small sample, changed plan denominator, narrative accuracy | Отчёты полезны и не придумывают выводы |
-| P6-02 | Deep memory/search, provenance, preference/hypothesis correction | P2-05, P6-01 | Opted-in longitudinal data | Cross-tenant retrieval, stale/sensitive memory, deletion | Memory управляется пользователем и объяснима |
-| P6-03 | Advanced Scheduler/auto-policy, DifficultyScaling, diagnostics | P6-01, P5-01 | Capacity/history/baseline versions | Regression constraints, withdrawn consent, solver-vs-greedy fixtures | Autonomy в выбранных пределах, безопасный rollback |
-| P6-04 | Forecast/experiments with confidence range | P6-01,03 | 4–8+ недель comparable metric data | Insufficient data, non-linear goal, intervention attribution | Прогноз показывает assumptions и границы |
-| P6-05 | Skill Trees, Boss presentation, avatar evolution | P3-03, P6-01 | Checkpoints, milestones, owned visual assets | No new reward loopholes, gates, accessibility | Визуальная глубина усиливает реальные достижения |
-| P6-06 | Watch companion + public scale/abuse/launch readiness | P5, P6 chosen scope | Watch device, pilot performance, launch decisions | Delayed Watch commands, load, restore, export/delete, secret rotation | Готовый согласованный scope публичного продукта |
+## 12. Первый запрос следующей модели
 
-Phase 6 не обязана выпускаться одним большим релизом. Каждая функция включается отдельно по feature flag и измеренной пользе.
+> Прочитай AGENTS.md, docs/13-handoff.md, docs/15-backend-review.md и спецификации 02/06. Выполни T-00a: исправь нормализацию и валидацию команд, hash семантики и проверку top-level expected_version/aggregate_id. Сначала добавь regression tests R1/R2/R6, затем исправь код и контракты без переписывания старых миграций. Учти уже выданные receipts и отсутствующую регистрацию devices; не заявляй, что T-01 уже реализован. Проверь typecheck/unit/contracts и affected DB integration на отдельной synthetic DB. Обнови handoff; остальные T-00 не отмечай готовыми.
 
-## 9. Минимальные данные для разработки
-
-Synthetic fixtures, без копирования личной переписки:
-
-- Пользователь с работой 09–18, дорогой, сном, boundary 04:00; 3 цели (английский, проект, бег).
-- 14-дневный roadmap и расписание с full/minimum/partial/excused/missed.
-- 30-дневная история для reviews; 365/1825/3650-day симуляции прогрессии.
-- Два tenants; два устройства одного tenant; timezone travel/DST; duplicate device evidence.
-- Рубрики навыков и checkpoints, manual baseline, 6 stats, 2–3 стилистических режима для UI/eval.
-
-Реальные данные автора нужны лишь для личного pilot/calibration после базовых privacy и restore gates.
-
-## 10. Definition of Done каждой задачи
-
-1. Выполняются acceptance criteria из этой таблицы и соответствующие инварианты спецификации.
-2. Нет production mock/fake success на изменённом пути.
-3. Контракты/migrations/examples согласованы; обратная совместимость явно описана.
-4. Необходимые unit/integration/UI/eval tests реально выполнены либо точно указан блокирующий environment gap.
-5. Ошибки/offline/empty/permission denial пути реализованы для новой функции.
-6. Нет секретов/личного текста в git/logs; user ownership проверяется.
-7. Handoff обновлён: completed IDs, проверки, unresolved risks, next task.
-
-## 11. Оценка объёма
-
-Грубая оценка одного опытного разработчика с помощью моделей, при доступных Mac/устройствах и без отвлечений: Phase 0 1–2 недели; Phase 1 5–8; Phase 2 3–5; Phase 3 3–5 плюс 4 недели наблюдения пилота (частично совмещается с исправлениями); Voice 2–4; Apple integrations 3–6; Advanced 6–12+.
-
-Это диапазоны планирования, не обещанный срок. Основная неопределённость — качество взаимодействия, offline correctness, native voice, выбранный публичный scope. Рабочий личный MVP вероятнее займёт месяцы, а полноценная концепция — последовательные релизы. Наличие моделей не заменяет device testing и проверку на реальной жизни.
-
-## 12. Первый конкретный запрос следующей модели
-
-> Прочитай AGENTS.md, docs/13-handoff.md, документы 00/01/10. Начни P0-01: проверь текущий репозиторий и доступную среду, зафиксируй совместимый toolchain и минимальные команды сборки. Продолжи доступные задачи Phase 0, сверяя критерии. Не считай документы реализацией. Не добавляй произвольные XP или production mocks. По итогам обнови handoff с реально выполненными проверками.
-
-Если окружение Linux без Mac, сначала выполнить доступный backend/contracts/toolchain scope и явно сохранить невыполненный iOS gate. Не утверждать, что приложение собирается, на основании одного TypeScript-теста.
+Сроки не обещаются по количеству таблиц: полезную первую вертикаль выпускаем отдельно от полного MVP, затем измеряем фактическую скорость. Mac больше не входит в критический путь Telegram.

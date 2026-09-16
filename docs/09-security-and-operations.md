@@ -2,7 +2,7 @@
 
 ## 1. Границы доверия
 
-Недоверенные входы: мобильный клиент, model output, сообщения/названия событий, внешние samples, загружаемые файлы, client timestamps. Доверенные вычисления: authenticated backend policy + детерминированный engine над валидированными данными. Сервер тоже может ошибаться, поэтому нужны ledger, audit, backups и replay.
+Недоверенные входы: Mini App, bot update/callback, browser client, model output, сообщения/названия событий, внешние samples, загружаемые файлы, client timestamps. Доверенные вычисления: authenticated backend policy + детерминированный engine над валидированными данными. Сервер тоже может ошибаться, поэтому нужны ledger, audit, backups и replay.
 
 | Риск | Обязательная защита |
 |---|---|
@@ -10,33 +10,33 @@
 | Client/LLM добавляет XP | Нет публичного endpoint для awards; validated Activity → engine |
 | Повтор/гонка completion | User lock, command receipts, unique award identity |
 | Prompt injection из календаря | Data/instruction separation; scoped tools; policy, не доверие prompt |
-| Утечка ключей | Server secret store; Keychain для app tokens; redaction |
+| Утечка ключей | Server secret store; SecureStorage/session-only для Mini App, HttpOnly для PWA; redaction |
 | Кража refresh token | Rotation, hashed storage, expiry/revoke device, reuse detection |
 | Поддельный voice session | Trusted session creation, binding user/device/provider call |
 | Массовые AI-запросы | User/device rate limits, usage budgets, body caps, cancellation |
 | Потеря offline действий | Transactional local outbox, conflict inbox, non-destructive bootstrap |
 | Удалённая память возвращается | Invalidate summaries/embeddings и pending extraction jobs |
 
-Нет утверждения о невозможности обмана self-report. App Attest/public abuse controls позже повышают стоимость автоматизации, но не доказывают человеческую деятельность.
+Нет утверждения о невозможности обмана self-report. Rate limits/allowlist/public abuse controls повышают стоимость автоматизации, но не доказывают человеческую деятельность.
 
 ## 2. Авторизация
 
-Личная версия использует тот же реальный auth path, что будущая beta. Основной провайдер — Sign in with Apple; server проверяет подпись identity token, issuer/audience/expiration/nonce, single-use code по актуальному протоколу. App sessions выпускаются отдельно. [Apple: verifying a user](https://developer.apple.com/documentation/signinwithapple/verifying-a-user)
+Личная версия использует серверную проверку Telegram `initData`, identity mapping на internal UUID и allowlist Telegram user ID. Подробный протокол и replay policy — [14](14-telegram-platform.md). `initDataUnsafe`, username, client user_id и неподтверждённый webhook не дают полномочий. Bot token хранится только сервером. Webhook имеет отдельный secret; callback action tokens ограничены user/target/version/expiry.
 
-Dev-only seed identity разрешена исключительно в локальном окружении с явным flag; production startup отклоняет включённый bypass. Личный public-facing backend принимает только allowlisted Apple subject, пока signup закрыт.
+Dev-only seed identity — только локально с явным flag; production startup отвергает включённый bypass. Не включать dev-login как fallback при отсутствии Telegram proof.
 
-Начальные app session параметры: access TTL 15 мин; rotating refresh TTL 30 дней; device revocation; logout отзывает family. Refresh хранить в Keychain, сервер хранит hash и metadata. Offline access к локальным записям сохраняется по device security policy; отправка pending commands после expiry ждёт re-auth.
+Начальные sessions: access TTL 15 минут, rotating refresh TTL 30 дней, installation/device revocation, logout отзывает family. Access в памяти; refresh в доступном SecureStorage. При отсутствии — session-only и новый вход, без plaintext localStorage/IndexedDB. Single-flight refresh обязателен; response loss ведёт к re-auth по текущей reuse policy, pending commands не стираются. PWA использует отдельный same-origin cookie/auth adapter с CSRF/Origin checks.
 
 SQL runtime-role не owner/superuser/BYPASSRLS. Tenant setting задаётся transaction-local, не протекает между pooled connections. Worker обрабатывает explicit user job с теми же checks; административные операции отдельно, audit обязательный.
 
-Этот механизм проверен на прототипе: [изоляция арендаторов](security-prototype-tenant-isolation.md). Проверка подтверждает RLS с `FORCE`, запрет по умолчанию и отсутствие протечки контекста между транзакциями; identity token, worker и доменные таблицы остаются непроверенными.
+Этот механизм проверен на прототипе: [изоляция арендаторов](security-prototype-tenant-isolation.md). Проверка подтверждает RLS с `FORCE`, запрет по умолчанию и отсутствие протечки контекста между транзакциями; исторический прототип не заменяет актуальные integration tests и Telegram auth tests. Текущие результаты — [аудит](15-backend-review.md).
 
 ## 3. Секреты и шифрование
 
-- Backend OpenAI/APNs/Apple client secrets и database credentials — secret manager/environment injection; не mobile bundle/git/логи.
+- Backend OpenAI/Telegram/webhook/integration secrets и database credentials — secret manager/environment injection; не mobile bundle/git/логи.
 - TLS между приложением и backend; private DB connectivity; encryption at rest у хранения/backups.
-- iOS app tokens — Keychain с подходящей доступностью и device-only policy; database files под iOS Data Protection. Чувствительные shared widget snapshots минимальны.
-- Если включено дополнительное SQLite/field encryption, ключи имеют отдельный lifecycle и recovery policy; не писать собственную криптографию.
+- Mini App credentials — по разделу 2. Браузерная база не считается эквивалентом iOS Data Protection. Минимизировать локальный кэш, разделять accounts и очищать при logout/delete; XSS в origin остаётся риском даже при SecureStorage.
+- Если включено дополнительное local/field encryption, ключи имеют отдельный lifecycle и recovery policy; не писать собственную криптографию.
 - Envelope encryption для особо чувствительных notes/constraints на сервере при публичном этапе; ключи отдельно от DB, ротация и restore проверяются.
 - Архитектура с server AI требует доступного backend plaintext в момент обработки: нельзя рекламировать полноценное end-to-end encryption всех данных.
 - Logs: request/command IDs, timing, error code, counters; никаких auth headers, transcript, full goal text и raw health payload по умолчанию.
@@ -45,19 +45,11 @@ SQL runtime-role не owner/superuser/BYPASSRLS. Tenant setting задаётся
 
 Для личной версии default: один собственный OpenAI key автора в **backend secret store** — это уже экономически личное использование и не требует BYOK UI.
 
-Опциональный будущий device-BYOK:
-
-1. Отдельный build capability и `UserKeyProvider`, Keychain `WhenUnlockedThisDeviceOnly`, paste field без telemetry.
-2. Запросы к OpenAI идут непосредственно с устройства; автор явно понимает, какие данные передаются. Основной product key туда не добавляется.
-3. Tool calls возвращаются в authenticated backend CommandBus и не могут менять authoritative rewards на клиенте.
-4. Ключ исключён из export/cloud sync/logs/backup; удаление настройки очищает Keychain и sessions.
-5. Режим не включает доступ к платному product provider; затраты/лимиты account владельца ключа независимы.
-
-Для public server-BYOK потребуется отдельное осознанное согласие на передачу ключа серверу, envelope encryption и tenant-specific budget/revocation. Этого в MVP нет. Не добавлять поле ключа с неописанным путём хранения.
+BYOK UI не входит в Telegram MVP. Не переносить личный OpenAI key в JavaScript bundle, Vite public env, чат бота, localStorage или Shortcut. Будущий server-BYOK требует отдельного consent, encryption, revocation и tenant budgets. Нативный device-BYOK из старого плана относится только к будущему native client, не к текущему web app.
 
 ## 5. Данные и согласия
 
-Категории: profile/goals/calendar/activities; sensitive user constraints; chat/memory; health evidence; operational metadata. Scope consent разделяет использование внутри app, sync на backend, передачу AI, внешние Calendar/HealthKit permissions и optional analytics. Системное разрешение HealthKit не заменяет согласие отправлять данные LLM.
+Категории: profile/goals/calendar/activities; sensitive user constraints; chat/memory; health evidence; operational metadata. Scope consent разделяет использование внутри app, sync на backend, передачу AI, permissions внешних calendar/health bridges и optional analytics. Системное разрешение HealthKit не заменяет согласие отправлять данные LLM.
 
 В Settings: что хранится, что отправляется, что подключено, memory viewer, export/delete. Минимизация: AI получает только relevant data, health raw остаётся на устройстве, event notes импортируются только при явной необходимости.
 
@@ -92,9 +84,9 @@ Delete account:
 
 ## 7. Развёртывание по стадиям
 
-**Личный dev:** Docker Compose backend API + worker + PostgreSQL, synthetic fixtures; iOS simulator/device через разрешённый dev endpoint. Локальный HTTP только Debug в пределах разработки; release только HTTPS.
+**Личный dev:** backend API + worker + отдельная PostgreSQL, web dev server, synthetic fixtures. Docker Compose пока не проверен; доступен скрипт локальной БД. Для реального Telegram launch нужен отдельный HTTPS test origin и bot, не публичный dev bypass. Локальный HTTP только Debug в пределах разработки; release только HTTPS.
 
-**Личный ежедневный пилот:** один небольшой сервер/container host, managed или обслуживаемый PostgreSQL, TLS reverse proxy, daily backups + PITR если доступно, закрытый signup, минимальные alerts, private logs. iPhone через Xcode/TestFlight после настройки Apple team/signing. Выбор host/регион/бюджет — перед фактическим запуском.
+**Личный ежедневный пилот:** один небольшой сервер/container host, managed или обслуживаемый PostgreSQL, TLS reverse proxy, daily backups + PITR если доступно, закрытый signup, минимальные alerts, private logs. Статические assets Mini App + HTTPS API, webhook и bot menu/Main App configuration. Только allowlisted user; live smoke на телефоне. Выбор host/регион/бюджет — перед фактическим запуском.
 
 **Public beta:** staging/prod разделены; managed DB с PITR; ограниченный signup; API/worker независимые replica; secret manager; migrate job; monitoring; support/deletion/export runbooks. Redis/векторная БД не обязательны. Нагрузка одного пользователя остаётся сериализованной, разных пользователей масштабируется horizontally.
 
@@ -102,9 +94,9 @@ Delete account:
 
 ## 8. CI/CD
 
-PR: format/lint/typecheck → unit/domain tests → PostgreSQL migrations+integration → contract compatibility → AI eval fixtures → Swift package/unit + simulator UI smoke на macOS → build artifacts.
+PR: format/lint/typecheck → unit/domain tests → PostgreSQL migrations+integration → contract compatibility → AI eval fixtures → web typecheck/build + browser E2E и отдельно реальные Telegram device smoke → build artifacts.
 
-Release: migration expand → compatible backend/worker → smoke → TestFlight build → pilot → public release после выполненного launch checklist. Это план будущих операций, не выполненная публикация.
+Release: migration expand → compatible backend/worker → smoke → версионированный web build → Telegram smoke → pilot → public release после выполненного launch checklist. Это план будущих операций, не выполненная публикация.
 
 Записывать build SHA, database schema, client contract, rules checksum, prompt/model IDs. Backend rollback не должен требовать destructive down migration; данные пишутся в совместимый формат release window. Rule rollback не удаляет ledger.
 
@@ -139,3 +131,11 @@ Alerts — только actionable: растущий backlog, backups failed, te
 - DB failure: read local, queue commands, восстановить из backup/PITR, проверить command/ledger checksums, затем reopen sync.
 - Compromised secret: rotate/revoke, invalidate impacted sessions, audit минимальных metadata, recovery communication по реальному scope.
 - Incorrect plan: disable automation flag, preserve current accepted version, предложить корректный diff; не переносить всё без контроля.
+
+## 12. Web и Telegram boundaries
+
+CSP с конкретными script/connect origins, без произвольного inline code; разрешить только необходимый официальный bridge. React/HTML не рендерят сырые user/model HTML; ссылки проходят scheme allowlist. CORS — конкретный own origin, а не wildcard с credentials. Bot API не вызывается из браузера. Проверить proxy/body limits, rate limits на login/webhook/voice; не логировать initData, auth headers, file URLs и feed tokens.
+
+Web/browser response caches не сохраняют credentials и private API wholesale. При смене account UI сначала закрывает старый store. Telegram cloud messages/voice проходят через Telegram; продукт не обещает их end-to-end secrecy или полного удаления всех внешних копий. В notification preview по умолчанию нейтральный текст. Voice/health/LLM processing имеют отдельные согласия.
+
+Восстановление backup перед открытием доступа применяет deletion registry и revoke state, не восстанавливает старые webhook/bridge credentials. Задания удалённого пользователя не запускаются из старого inbox. Leases и внешние delivery outcomes — по документам 01/14; raw exception logging исправить в T-00e.

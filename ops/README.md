@@ -9,7 +9,7 @@
 
 Непроверенные файлы помечены и в самих файлах. Перед первым использованием их нужно запустить и исправить найденное — считать их рабочими нельзя.
 
-## Две роли базы данных
+## Роли базы данных: migration owner, API runtime, worker
 
 Миграции выполняются владельцем таблиц, приложение — отдельной ролью `app_runtime` без `SUPERUSER` и `BYPASSRLS`. Это не формальность: под владельцем политики RLS не действуют, и изоляция пользователей исчезает без единой ошибки. Запуск в production под небезопасной ролью отклоняется проверкой при старте.
 
@@ -47,8 +47,12 @@ cp ops/env.example .env                  # задать POSTGRES_PASSWORD
 docker compose -f ops/compose.yaml up --build
 ```
 
-Worker отдельным сервисом не описан: `src/worker.ts` появляется в P1-03.
+Процесс `src/worker.ts` уже реализован. Worker отдельным сервисом в Compose ещё не описан; до Telegram deployment добавить/проверить его запуск и отдельный WORKER_DATABASE_URL. Lease correctness требует T-00b, реальные reminder handlers пока отсутствуют.
 
 ## Чего здесь нет
 
 Личный пилот и публичная beta (docs/09, раздел 7) требуют TLS reverse proxy, резервных копий с проверенным восстановлением, secret manager и мониторинга. Ничего из этого не настроено и не выбрано: хостинг, регион и бюджет — решение владельца проекта, а не предположение этих файлов.
+
+## Telegram deployment
+
+Текущий план T-04 — web assets + API/worker/PostgreSQL, HTTPS origin/webhook, bot configuration, allowlist, backups/restore. Railway — кандидат, не проверенное развёртывание. Подробности в [архитектуре](../docs/01-system-architecture.md) и [плане](../docs/10-implementation-plan.md). Наличие рабочего локального сервера не доказывает production readiness.
