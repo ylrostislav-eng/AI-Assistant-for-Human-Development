@@ -1,6 +1,8 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
 import type { AppConfig } from './config.ts';
+import { registerIdentityRoutes } from './modules/identity/routes.ts';
+import { registerAuth } from './shared/auth/require-auth.ts';
 import { checkConnection, type Database } from './shared/db/pool.ts';
 
 export interface AppDependencies {
@@ -17,6 +19,10 @@ export interface AppDependencies {
 export const API_ROUTES = [
   { method: 'get', path: '/health' },
   { method: 'get', path: '/health/ready' },
+  { method: 'post', path: '/auth/dev-login' },
+  { method: 'post', path: '/auth/refresh' },
+  { method: 'post', path: '/auth/logout' },
+  { method: 'get', path: '/me' },
 ] as const;
 
 /**
@@ -29,6 +35,26 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // добавляются отдельной задачей (docs/01, раздел 2), а до неё вывод сырых
   // запросов рискует записать персональный текст.
   const app = Fastify({ logger: false });
+
+  // Необработанная ошибка не должна пересказывать клиенту внутренности: по
+  // умолчанию Fastify возвращает текст исключения, и живая проверка показала
+  // в ответе имя колонки базы данных. Это разведка схемы бесплатно.
+  app.setErrorHandler((error: unknown, _request, reply) => {
+    const failure = error as { statusCode?: number; code?: string };
+    // Ошибки валидации самого Fastify сообщают о запросе клиента, а не о
+    // сервере, и их скрывать не нужно.
+    const status = failure.statusCode ?? 500;
+    if (status < 500) {
+      return reply.code(status).send({ error: failure.code ?? 'bad_request' });
+    }
+    console.error('Необработанная ошибка запроса:', error);
+    return reply.code(500).send({ error: 'internal_error' });
+  });
+
+  // Доступ закрыт по умолчанию: проверка вешается раньше маршрутов, публичные
+  // пути перечислены явно в PUBLIC_PATHS.
+  registerAuth(app, deps.database);
+  registerIdentityRoutes(app, deps.config, deps.database);
 
   // Liveness: процесс жив и отвечает. Намеренно не трогает БД — иначе рестарт
   // приложения зависит от доступности базы и перезапуск лечит не то.

@@ -10,9 +10,13 @@ info:
   title: Персональная ИИ-Система развития — API
   version: 0.1.0
   description: |
-    Состояние: реализованы только пробы состояния сервиса. Команды, цели,
-    задания и синхронизация появляются в P1-02 и далее; их схемы добавляются
-    в этот файл вместе с реализацией.
+    Состояние: пробы состояния сервиса и вход. Проверка Apple identity token не
+    реализована — вход выполняется по синтетической личности и только в
+    разработке. Команды, цели, задания и синхронизация появляются в P1-03 и
+    далее; их схемы добавляются в этот файл вместе с реализацией.
+
+    Доступ закрыт по умолчанию: маршрут, не перечисленный как публичный,
+    требует access-токена.
 
 servers:
   - url: http://127.0.0.1:3000
@@ -45,6 +49,139 @@ paths:
                   uptimeSeconds:
                     type: integer
                     minimum: 0
+
+  /auth/dev-login:
+    post:
+      summary: Вход по синтетической личности (только разработка)
+      description: |
+        Существует лишь при включённом `DEV_AUTH_ENABLED` вне production. При
+        выключенном флаге отвечает 404: отключённый маршрут не должен
+        подтверждать своё существование. Проверка Apple identity token не
+        реализована и остаётся незакрытой частью P1-02.
+      operationId: devLogin
+      requestBody:
+        required: false
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              properties:
+                subject:
+                  type: string
+                  description: Идентификатор синтетической личности; из него детерминированно выводится пользователь.
+      responses:
+        '201':
+          description: Сессия выпущена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedSession'
+        '404':
+          description: Вход для разработки выключен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/refresh:
+    post:
+      summary: Обновление сессии
+      description: |
+        Предъявляется refresh-токен, а не access. Повторное предъявление уже
+        использованного токена означает, что он есть у двоих: семья сессий
+        отзывается целиком и возвращается `token_reuse_detected`.
+      operationId: refreshSession
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [refresh_token]
+              properties:
+                refresh_token:
+                  type: string
+      responses:
+        '200':
+          description: Выданы новые токены
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/IssuedSession'
+        '400':
+          description: Токен не передан
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Токен неизвестен, истёк, отозван или использован повторно
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /auth/logout:
+    post:
+      summary: Отзыв семьи сессий
+      operationId: logout
+      security:
+        - accessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [family_id]
+              properties:
+                family_id:
+                  type: string
+                  format: uuid
+      responses:
+        '204':
+          description: Семья отозвана
+        '400':
+          description: Не передан family_id
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /me:
+    get:
+      summary: Текущий пользователь
+      operationId: getMe
+      security:
+        - accessToken: []
+      responses:
+        '200':
+          description: Пользователь, подтверждённый access-токеном
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [user_id]
+                properties:
+                  user_id:
+                    type: string
+                    format: uuid
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
 
   /health/ready:
     get:
@@ -81,3 +218,43 @@ paths:
                     const: not_ready
                   database:
                     const: down
+
+components:
+  securitySchemes:
+    accessToken:
+      type: http
+      scheme: bearer
+      description: |
+        Непрозрачный access-токен сессии, живёт 15 минут. Проверяется по базе,
+        поэтому отзыв действует немедленно.
+
+  schemas:
+    IssuedSession:
+      type: object
+      additionalProperties: true
+      required: [access_token, access_expires_at, refresh_token, refresh_expires_at, family_id]
+      properties:
+        access_token:
+          type: string
+        access_expires_at:
+          type: string
+          format: date-time
+        refresh_token:
+          type: string
+        refresh_expires_at:
+          type: string
+          format: date-time
+        family_id:
+          type: string
+          format: uuid
+        user_id:
+          type: string
+          format: uuid
+
+    Error:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          type: string

@@ -15,11 +15,24 @@ import { withTransaction, type Database, type TransactionClient } from '../../sh
  */
 
 export const REFRESH_TTL_DAYS = 30;
+export const ACCESS_TTL_MINUTES = 15;
 
 export interface IssuedSession {
   readonly refreshToken: string;
+  /**
+   * Короткоживущий токен для обычных запросов. Живёт 15 минут, поэтому
+   * украденный access устаревает сам; долгоживущий refresh предъявляется
+   * только при обновлении и отзывается целой семьёй.
+   */
+  readonly accessToken: string;
+  readonly accessExpiresAt: Date;
   readonly familyId: string;
   readonly expiresAt: Date;
+}
+
+export interface AuthenticatedSession {
+  readonly userId: string;
+  readonly sessionId: string;
 }
 
 export class UnknownTokenError extends Error {}
@@ -44,6 +57,10 @@ function refreshExpiry(now: Date): Date {
   return new Date(now.getTime() + REFRESH_TTL_DAYS * 24 * 60 * 60 * 1000);
 }
 
+function accessExpiry(now: Date): Date {
+  return new Date(now.getTime() + ACCESS_TTL_MINUTES * 60 * 1000);
+}
+
 /** Контекст пользователя для политик изоляции. */
 async function setUser(client: TransactionClient, userId: string): Promise<void> {
   await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
@@ -63,22 +80,87 @@ export async function issueSession(
   deviceId: string | null,
   now: Date = new Date(),
 ): Promise<IssuedSession> {
-  const token = createToken();
+  const refreshToken = createToken();
+  const accessToken = createToken();
 
   return withTransaction(db, async (client) => {
     await setUser(client, userId);
-    const result = await client.query<{ family_id: string; expires_at: Date }>(
-      `INSERT INTO sessions (user_id, device_id, family_id, refresh_hash, issued_at, expires_at)
-       VALUES ($1, $2, gen_random_uuid(), $3, $4, $5)
-       RETURNING family_id, expires_at`,
-      [userId, deviceId, hashToken(token), now, refreshExpiry(now)],
+    const result = await client.query<{
+      family_id: string;
+      expires_at: Date;
+      access_expires_at: Date;
+    }>(
+      `INSERT INTO sessions
+         (user_id, device_id, family_id, refresh_hash, issued_at, expires_at,
+          access_hash, access_expires_at)
+       VALUES ($1, $2, gen_random_uuid(), $3, $4, $5, $6, $7)
+       RETURNING family_id, expires_at, access_expires_at`,
+      [
+        userId,
+        deviceId,
+        hashToken(refreshToken),
+        now,
+        refreshExpiry(now),
+        hashToken(accessToken),
+        accessExpiry(now),
+      ],
     );
 
     const row = result.rows[0];
     if (row === undefined) {
       throw new Error('Сессия не создана');
     }
-    return { refreshToken: token, familyId: row.family_id, expiresAt: row.expires_at };
+    return {
+      refreshToken,
+      accessToken,
+      accessExpiresAt: row.access_expires_at,
+      familyId: row.family_id,
+      expiresAt: row.expires_at,
+    };
+  });
+}
+
+/**
+ * Проверка access-токена для обычных запросов.
+ *
+ * Отзыв действует немедленно: токен непрозрачный и проверяется по базе, а не
+ * подписью. Подписанный токен пришлось бы считать действительным до истечения
+ * срока либо вести отдельный список отозванных — для личного приложения это
+ * лишняя сущность, а задержка отзыва здесь недопустима.
+ */
+export async function authenticateAccessToken(
+  db: Database,
+  presentedToken: string,
+  now: Date = new Date(),
+): Promise<AuthenticatedSession | null> {
+  const hash = hashToken(presentedToken);
+
+  return withTransaction(db, async (client) => {
+    await client.query('SELECT set_config($1, $2, true)', ['app.access_hash', hash]);
+
+    const found = await client.query<{
+      id: string;
+      user_id: string;
+      access_expires_at: Date;
+      revoked_at: Date | null;
+    }>(
+      `SELECT id, user_id, access_expires_at, revoked_at
+         FROM sessions WHERE access_hash = $1`,
+      [hash],
+    );
+
+    const session = found.rows[0];
+    if (session === undefined) {
+      return null;
+    }
+    if (session.revoked_at !== null) {
+      return null;
+    }
+    if (session.access_expires_at.getTime() <= now.getTime()) {
+      return null;
+    }
+
+    return { userId: session.user_id, sessionId: session.id };
   });
 }
 
@@ -186,19 +268,29 @@ export async function rotateSession(
       throw new ExpiredTokenError('Срок действия refresh-токена истёк');
     }
 
-    const nextToken = createToken();
-    await client.query('UPDATE sessions SET rotated_at = $1 WHERE id = $2', [now, session.id]);
-    const inserted = await client.query<{ expires_at: Date }>(
-      `INSERT INTO sessions (user_id, device_id, family_id, refresh_hash, issued_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
-       RETURNING expires_at`,
+    const nextRefresh = createToken();
+    const nextAccess = createToken();
+    // Прежний access гасится вместе с refresh: иначе после обновления сессии
+    // старый токен продолжал бы отвечать до конца своих 15 минут.
+    await client.query(
+      'UPDATE sessions SET rotated_at = $1, access_hash = NULL, access_expires_at = NULL WHERE id = $2',
+      [now, session.id],
+    );
+    const inserted = await client.query<{ expires_at: Date; access_expires_at: Date }>(
+      `INSERT INTO sessions
+         (user_id, device_id, family_id, refresh_hash, issued_at, expires_at,
+          access_hash, access_expires_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+       RETURNING expires_at, access_expires_at`,
       [
         session.user_id,
         session.device_id,
         session.family_id,
-        hashToken(nextToken),
+        hashToken(nextRefresh),
         now,
         refreshExpiry(now),
+        hashToken(nextAccess),
+        accessExpiry(now),
       ],
     );
 
@@ -209,7 +301,9 @@ export async function rotateSession(
     return {
       kind: 'rotated',
       session: {
-        refreshToken: nextToken,
+        refreshToken: nextRefresh,
+        accessToken: nextAccess,
+        accessExpiresAt: row.access_expires_at,
         familyId: session.family_id,
         expiresAt: row.expires_at,
       },

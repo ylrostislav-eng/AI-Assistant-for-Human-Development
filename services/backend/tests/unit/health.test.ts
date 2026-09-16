@@ -6,6 +6,7 @@ import type { Database } from '../../src/shared/db/pool.ts';
 
 const config: AppConfig = {
   environment: 'test',
+  devAuthEnabled: false,
   server: { host: '127.0.0.1', port: 0 },
   database: {
     connectionString: 'postgres://unused',
