@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/create_goal.payload.schema.json",
+  "title": "CreateGoalPayloadDraftV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "goal_id": { "type": "string", "format": "uuid" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "why": { "type": "string", "maxLength": 2000 },
+    "start_date": { "type": "string", "format": "date" },
+    "target_date": { "type": "string", "format": "date" }
+  },
+  "required": ["title", "start_date"]
+}

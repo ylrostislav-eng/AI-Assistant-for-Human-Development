@@ -56,6 +56,7 @@ interface EnvelopeOverrides {
   readonly commandId?: string;
   readonly aggregateId?: string | null;
   readonly expectedVersion?: number | null;
+  readonly dependsOnCommandId?: string | null;
 }
 
 async function send(
@@ -75,16 +76,20 @@ async function send(
       aggregate_id: overrides.aggregateId ?? null,
       expected_version: overrides.expectedVersion ?? null,
       client_created_at: '2026-09-16T12:00:00Z',
-      depends_on_command_id: null,
+      depends_on_command_id: overrides.dependsOnCommandId ?? null,
       payload,
     },
   });
 }
 
-async function createOccurrence(key: string): Promise<{ id: string; version: number }> {
+async function createOccurrence(
+  key: string,
+  templatePayload: Record<string, unknown> = {},
+): Promise<{ id: string; version: number }> {
   const template = await send('create_quest_template', {
     title: 'Задание для контракта',
     normal_spec: { duration_seconds: 1800, unit: 'seconds', success_rule: 'duration' },
+    ...templatePayload,
   });
   const occurrence = await send('materialize_occurrence', {
     template_id: template.json().result.template_id,
@@ -203,5 +208,102 @@ describe('R6: реестр команд читает только собстве
     // внутренняя ошибка.
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: 'unknown_command_kind' });
+  });
+});
+
+describe('R6: закрытые схемы нагрузки', () => {
+  it('лишнее поле в нагрузке отклоняется, а не теряется молча', async () => {
+    const occurrence = await createOccurrence('r6-лишнее-поле');
+
+    // Клиент присылает фактический объём при завершении. Пока Activity не
+    // реализована, сервер не может его сохранить; молчаливый приём означал бы,
+    // что человек считает объём записанным, а восстановить его через неделю
+    // будет неоткуда.
+    const response = await send('complete_quest', {
+      occurrence_id: occurrence.id,
+      actual_duration_seconds: 1800,
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_payload' });
+  });
+
+  it('неверный тип поля отклоняется', async () => {
+    const template = await send('create_quest_template', {
+      title: 'Тип поля',
+      normal_spec: { duration_seconds: '1800', unit: 'seconds', success_rule: 'duration' },
+    });
+
+    // Приведение типов отключено намеренно: строка "1800" не число, и принимать
+    // её значило бы считать закрытую схему выполненной там, где она не сработала.
+    expect(template.statusCode).toBe(400);
+  });
+
+  it('спецификация без меры отклоняется', async () => {
+    const template = await send('create_quest_template', {
+      title: 'Без меры',
+      normal_spec: { unit: 'seconds', success_rule: 'duration' },
+    });
+
+    // success_rule говорит «считаем по длительности», а длительности нет:
+    // раньше normal_spec проверялся только как объект, и правило было пустым.
+    expect(template.statusCode).toBe(400);
+  });
+
+  it('минимум больше нормы отклоняется', async () => {
+    const template = await send('create_quest_template', {
+      title: 'Минимум больше нормы',
+      normal_spec: { duration_seconds: 600, unit: 'seconds', success_rule: 'duration' },
+      minimum_spec: { duration_seconds: 1800, unit: 'seconds', success_rule: 'duration' },
+    });
+
+    expect(template.statusCode).toBe(400);
+  });
+
+  it('завершение минимумом без спецификации минимума отклоняется', async () => {
+    const occurrence = await createOccurrence('r6-минимум-без-спецификации');
+
+    // Шаблон минимума не описывает. Приняв variant=minimum, сервер выдал бы
+    // меньшую награду за объём, о котором ничего не известно.
+    const response = await send('complete_quest', {
+      occurrence_id: occurrence.id,
+      variant: 'minimum',
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'invalid_payload' });
+  });
+
+  it('завершение минимумом по принятой спецификации проходит', async () => {
+    const occurrence = await createOccurrence('r6-минимум-по-спецификации', {
+      minimum_spec: { duration_seconds: 300, unit: 'seconds', success_rule: 'duration' },
+    });
+
+    const response = await send('complete_quest', {
+      occurrence_id: occurrence.id,
+      variant: 'minimum',
+    });
+
+    // Отрицательный контроль к предыдущей проверке: запрет не должен ломать
+    // законный минимум.
+    expect(response.statusCode).toBe(200);
+    expect(response.json().result).toMatchObject({ variant: 'minimum' });
+  });
+});
+
+describe('заявленная зависимость не игнорируется', () => {
+  it('команда с depends_on_command_id отклоняется', async () => {
+    const occurrence = await createOccurrence('зависимость');
+
+    // Порядок между командами не реализован. Выполнить команду молча значит
+    // нарушить порядок, который клиент считает гарантированным.
+    const response = await send(
+      'start_quest',
+      { occurrence_id: occurrence.id },
+      { dependsOnCommandId: randomUUID() },
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: 'unsupported_dependency' });
   });
 });

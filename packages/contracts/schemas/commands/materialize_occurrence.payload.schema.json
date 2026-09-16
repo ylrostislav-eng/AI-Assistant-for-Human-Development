@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/materialize_occurrence.payload.schema.json",
+  "title": "MaterializeOccurrencePayloadDraftV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "template_id": { "type": "string", "format": "uuid" },
+    "recurrence_key": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "timezone": { "type": "string", "minLength": 1, "maxLength": 64 },
+    "user_day_id": { "type": "string", "format": "uuid" }
+  },
+  "required": ["template_id", "recurrence_key", "timezone"]
+}

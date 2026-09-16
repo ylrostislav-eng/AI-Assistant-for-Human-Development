@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/_effort-spec.schema.json",
+  "title": "EffortSpecDraftV1",
+  "description": "Measure of a quest: what counts as done. Closed on purpose — an unknown key here would silently change nothing while the client believes it set a rule.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "success_rule": {
+      "enum": ["duration", "amount"]
+    },
+    "unit": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 20
+    },
+    "duration_seconds": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 86400
+    },
+    "amount": {
+      "type": "number",
+      "exclusiveMinimum": 0,
+      "maximum": 1000000
+    }
+  },
+  "required": ["success_rule", "unit"],
+  "allOf": [
+    {
+      "if": { "properties": { "success_rule": { "const": "duration" } }, "required": ["success_rule"] },
+      "then": { "required": ["duration_seconds"] }
+    },
+    {
+      "if": { "properties": { "success_rule": { "const": "amount" } }, "required": ["success_rule"] },
+      "then": { "required": ["amount"] }
+    }
+  ]
+}

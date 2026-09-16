@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/create_quest_template.payload.schema.json",
+  "title": "CreateQuestTemplatePayloadDraftV1",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "goal_id": { "type": "string", "format": "uuid" },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "category": {
+      "enum": ["main", "daily", "skill", "discipline", "side", "boss", "recovery"]
+    },
+    "normal_spec": { "$ref": "_effort-spec.schema.json" },
+    "minimum_spec": { "$ref": "_effort-spec.schema.json" }
+  },
+  "required": ["title", "normal_spec"]
+}

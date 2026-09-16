@@ -22,6 +22,10 @@ import {
   type CommandRequest,
 } from '../../shared/commands/bus.ts';
 import { commandEnvelopeSchema, type CommandEnvelope } from '../../shared/commands/envelope.ts';
+import {
+  assertPayloadMatchesSchema,
+  PayloadValidationError,
+} from '../../shared/commands/payload-schemas.ts';
 import type { Database } from '../../shared/db/pool.ts';
 
 /**
@@ -86,6 +90,15 @@ const COMMANDS = new Map<string, CommandDefinition>([
   ],
 ]);
 
+/**
+ * Единственный источник видов команд. Сверка контрактов сравнивает его со
+ * схемами нагрузки в обе стороны: команда без схемы прошла бы без проверки,
+ * а схема без команды означала бы описанный, но не реализованный вид.
+ */
+export function commandKinds(): readonly string[] {
+  return [...COMMANDS.keys()].sort();
+}
+
 class TargetMismatchError extends Error {}
 
 /**
@@ -139,9 +152,18 @@ export function registerCommandRoutes(app: FastifyInstance, database: Database):
       return reply.code(400).send({ error: 'unknown_command_kind' });
     }
 
+    // Зависимость между командами не реализована. Молча выполнить команду,
+    // для которой клиент заявил предшественника, значит нарушить порядок,
+    // который он считает гарантированным: «отметить выполнение» уехало бы
+    // вперёд «создать задание».
+    if (envelope.depends_on_command_id !== null) {
+      return reply.code(400).send({ error: 'unsupported_dependency' });
+    }
+
     let command: CommandRequest;
     let handler: CommandHandler;
     try {
+      assertPayloadMatchesSchema(envelope.kind, envelope.payload);
       command = {
         userId,
         commandId: envelope.command_id,
@@ -157,7 +179,7 @@ export function registerCommandRoutes(app: FastifyInstance, database: Database):
       if (error instanceof TargetMismatchError) {
         return reply.code(400).send({ error: 'target_mismatch', detail: error.message });
       }
-      if (error instanceof InvalidCommandPayloadError) {
+      if (error instanceof PayloadValidationError || error instanceof InvalidCommandPayloadError) {
         return reply.code(400).send({ error: 'invalid_payload', detail: error.message });
       }
       throw error;

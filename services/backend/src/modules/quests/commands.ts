@@ -35,25 +35,57 @@ export interface CreateQuestTemplatePayload {
   readonly category?: string;
 }
 
+/**
+ * Объём спецификации в её собственной мере. Сравнивать duration с amount
+ * бессмысленно: «5 километров меньше 1800 секунд» — не утверждение.
+ */
+function specVolume(spec: Record<string, unknown>): number {
+  return spec['success_rule'] === 'duration'
+    ? Number(spec['duration_seconds'])
+    : Number(spec['amount']);
+}
+
+/**
+ * Минимум должен быть меньше нормы и мерить то же самое (docs/02, раздел 4).
+ *
+ * Иначе «минимальным выполнением» объявляется что угодно: открыть приложение
+ * вместо тренировки. Награда за минимум меньше, но она есть, и без этой
+ * проверки её можно получать каждый день, ничего не делая.
+ */
+function assertMinimumFitsNormal(
+  normalSpec: Record<string, unknown>,
+  minimumSpec: Record<string, unknown>,
+): void {
+  if (minimumSpec['success_rule'] !== normalSpec['success_rule']) {
+    throw new InvalidCommandPayloadError('minimum_spec должен мерить то же, что normal_spec');
+  }
+  if (minimumSpec['unit'] !== normalSpec['unit']) {
+    throw new InvalidCommandPayloadError('minimum_spec должен быть в тех же единицах');
+  }
+  if (!(specVolume(minimumSpec) < specVolume(normalSpec))) {
+    throw new InvalidCommandPayloadError('minimum_spec должен быть меньше normal_spec');
+  }
+}
+
 export function parseCreateQuestTemplate(
   payload: Record<string, unknown>,
 ): CreateQuestTemplatePayload {
-  const normalSpec = payload['normal_spec'];
-  if (typeof normalSpec !== 'object' || normalSpec === null || Array.isArray(normalSpec)) {
-    throw new InvalidCommandPayloadError('normal_spec должен быть объектом');
+  // Форму спецификаций уже проверила закрытая схема нагрузки; здесь остаётся
+  // то, что схемой не выражается, — соотношение двух объектов между собой.
+  const normalSpec = payload['normal_spec'] as Record<string, unknown>;
+  const minimumSpec = payload['minimum_spec'] as Record<string, unknown> | undefined;
+  if (minimumSpec !== undefined) {
+    assertMinimumFitsNormal(normalSpec, minimumSpec);
   }
 
-  const minimumSpec = payload['minimum_spec'];
   const goalId = payload['goal_id'];
   const category = payload['category'];
 
   return {
     title: requireString(payload, 'title'),
-    normal_spec: normalSpec as Record<string, unknown>,
+    normal_spec: normalSpec,
     ...(typeof goalId === 'string' ? { goal_id: goalId } : {}),
-    ...(typeof minimumSpec === 'object' && minimumSpec !== null && !Array.isArray(minimumSpec)
-      ? { minimum_spec: minimumSpec as Record<string, unknown> }
-      : {}),
+    ...(minimumSpec === undefined ? {} : { minimum_spec: minimumSpec }),
     ...(typeof category === 'string' ? { category } : {}),
   };
 }
@@ -189,8 +221,10 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
       id: string;
       execution_status: ExecutionStatus;
       version: string;
+      template_snapshot: Record<string, unknown>;
     }>(
-      'SELECT id, execution_status, version FROM quest_occurrences WHERE id = $1 FOR UPDATE',
+      `SELECT id, execution_status, version, template_snapshot
+         FROM quest_occurrences WHERE id = $1 FOR UPDATE`,
       [occurrenceId],
     );
 
@@ -210,6 +244,19 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
     const target = nextStatus(occurrence.execution_status, command);
     const completionVariant =
       command === 'complete_quest' ? ((variant as CompletionVariant | undefined) ?? 'normal') : null;
+
+    // Минимум засчитывается только по принятой заранее спецификации. Без неё
+    // «минимальное выполнение» ничем не ограничено, и меньшая награда
+    // выдавалась бы за невыясненный объём: проверка на реальной БД принимала
+    // variant=minimum у шаблона, где минимума не было вовсе
+    // (R6 в docs/15-backend-review.md). Спецификация берётся из снимка
+    // экземпляра, а не из текущего шаблона: правка шаблона задним числом не
+    // должна менять условия уже прожитого дня.
+    if (completionVariant === 'minimum' && occurrence.template_snapshot['minimum_spec'] == null) {
+      throw new InvalidCommandPayloadError(
+        'У задания нет принятой спецификации минимума: завершить минимумом нельзя',
+      );
+    }
 
     const updated = await context.client.query<{ version: string }>(
       `UPDATE quest_occurrences

@@ -1,23 +1,11 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
-import * as ajvFormatsModule from 'ajv-formats';
-import * as ajvModule from 'ajv/dist/2020.js';
-
 import type { AppConfig } from './config.ts';
 import { registerIdentityRoutes } from './modules/identity/routes.ts';
 import { registerCommandRoutes } from './modules/sync/routes.ts';
 import { registerAuth } from './shared/auth/require-auth.ts';
 import { checkConnection, type Database } from './shared/db/pool.ts';
-
-/**
- * ajv и ajv-formats собраны как CommonJS: под ESM класс приходит в свойстве
- * default, а типы описывают пространство имён модуля.
- */
-interface AjvLike {
-  compile(schema: object): (data: unknown) => boolean;
-}
-const Ajv2020 = (ajvModule as unknown as { default: new (options?: object) => AjvLike }).default;
-const addFormats = (ajvFormatsModule as unknown as { default: (ajv: AjvLike) => void }).default;
+import { createValidator } from './shared/schema/validator.ts';
 
 export interface AppDependencies {
   readonly config: AppConfig;
@@ -51,12 +39,12 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // запросов рискует записать персональный текст.
   const app = Fastify({ logger: false });
 
-  // Схемы контрактов написаны в JSON Schema 2020-12, а встроенный валидатор
-  // Fastify настроен на draft-07 и молча проигнорировал бы часть ключевых слов.
-  // Поэтому подключается валидатор нужного диалекта.
-  const ajv = new Ajv2020({ strict: false, allErrors: false, coerceTypes: false });
-  addFormats(ajv);
-  app.setValidatorCompiler(({ schema }) => ajv.compile(schema as object));
+  // Встроенный валидатор Fastify настроен на draft-07 и молча проигнорировал бы
+  // часть ключевых слов схем 2020-12; подключается валидатор нужного диалекта.
+  // Тот же экземпляр настроек используется для схем нагрузки — разойдись в них
+  // один флаг, и закрытость схемы перестала бы что-либо значить.
+  const validator = createValidator();
+  app.setValidatorCompiler(({ schema }) => validator.compile(schema as object));
 
   // Необработанная ошибка не должна пересказывать клиенту внутренности: по
   // умолчанию Fastify возвращает текст исключения, и живая проверка показала

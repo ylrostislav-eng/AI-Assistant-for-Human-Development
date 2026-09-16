@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/cancel_quest.payload.schema.json",
+  "title": "QuestTransitionPayloadDraftV1",
+  "description": "Target and expected version belong in the envelope. The duplicates here are legacy and accepted only when they agree with the envelope.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "occurrence_id": { "type": "string", "format": "uuid" },
+    "expected_version": { "type": "integer", "minimum": 0 }
+  }
+}
