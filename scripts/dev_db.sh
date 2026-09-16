@@ -18,7 +18,22 @@
 set -euo pipefail
 
 PGPORT="${PGPORT:-5433}"
-PGDATA="${PGDATA:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.pgdata}"
+# Каталог кластера по умолчанию зависит от того, кто запускает скрипт.
+#
+# PostgreSQL отказывается работать под root, поэтому от root кластер
+# обслуживает системный пользователь postgres. Каталог внутри репозитория ему
+# обычно недоступен: домашний каталог root закрыт для обхода (режим 700), и
+# initdb падает с «could not access directory». Найдено при прогоне на сервере
+# пользователя, где репозиторий лежит в /root/projects.
+if [[ "$(id -u)" -eq 0 ]]; then
+  if [[ -d /var/lib/postgresql ]]; then
+    PGDATA="${PGDATA:-/var/lib/postgresql/system-dev}"
+  else
+    PGDATA="${PGDATA:-/tmp/system-dev-pgdata}"
+  fi
+else
+  PGDATA="${PGDATA:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/.pgdata}"
+fi
 PGUSER_NAME="${PGUSER_NAME:-system}"
 DEV_DB="${DEV_DB:-system_dev}"
 TEST_DB="${TEST_DB:-system_test}"
@@ -67,6 +82,16 @@ cmd_start() {
     mkdir -p "$PGDATA"
     if [[ "$(id -u)" -eq 0 ]]; then
       chown postgres:postgres "$PGDATA"
+    fi
+
+    # Проверка доступности до initdb: его сообщение «could not access
+    # directory» не объясняет, что дело в правах на родительские каталоги, а
+    # не на сам кластер.
+    if ! run_pg "test -w '$PGDATA'" 2>/dev/null; then
+      echo "Каталог $PGDATA недоступен пользователю, от имени которого работает PostgreSQL." >&2
+      echo "Обычная причина — закрытый на обход родительский каталог (например, /root)." >&2
+      echo "Укажите другой путь: PGDATA=/var/lib/postgresql/system-dev $0 start" >&2
+      exit 1
     fi
     run_pg "$BINDIR/initdb -D '$PGDATA' -U '$PGUSER_NAME' --auth=trust -E UTF8" >/dev/null
     echo "Кластер создан: $PGDATA"
