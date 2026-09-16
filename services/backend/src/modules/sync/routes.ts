@@ -5,6 +5,17 @@ import {
   InvalidCommandPayloadError,
   parseCreateGoalPayload,
 } from '../goals/commands.ts';
+import {
+  createQuestTemplateHandler,
+  materializeOccurrenceHandler,
+  parseCreateQuestTemplate,
+  parseMaterializeOccurrence,
+  parseQuestTransition,
+  questTransitionHandler,
+  QuestNotFoundError,
+  VersionConflictError,
+} from '../quests/commands.ts';
+import { InvalidTransitionError } from '../quests/state.ts';
 import { executeCommand, PayloadMismatchError, type CommandHandler } from '../../shared/commands/bus.ts';
 import { commandEnvelopeSchema, type CommandEnvelope } from '../../shared/commands/envelope.ts';
 import type { Database } from '../../shared/db/pool.ts';
@@ -26,6 +37,16 @@ type HandlerFactory = (payload: Record<string, unknown>) => CommandHandler;
  */
 const COMMANDS: Record<string, HandlerFactory> = {
   create_goal: (payload) => createGoalHandler(parseCreateGoalPayload(payload)),
+  create_quest_template: (payload) =>
+    createQuestTemplateHandler(parseCreateQuestTemplate(payload)),
+  materialize_occurrence: (payload) =>
+    materializeOccurrenceHandler(parseMaterializeOccurrence(payload)),
+  start_quest: (payload) => questTransitionHandler('start_quest', parseQuestTransition(payload)),
+  complete_quest: (payload) =>
+    questTransitionHandler('complete_quest', parseQuestTransition(payload)),
+  record_partial: (payload) =>
+    questTransitionHandler('record_partial', parseQuestTransition(payload)),
+  cancel_quest: (payload) => questTransitionHandler('cancel_quest', parseQuestTransition(payload)),
 };
 
 export function registerCommandRoutes(app: FastifyInstance, database: Database): void {
@@ -77,6 +98,25 @@ export function registerCommandRoutes(app: FastifyInstance, database: Database):
           // 409, а не 400: запрос сам по себе корректен, конфликтует он с уже
           // зафиксированным состоянием.
           return reply.code(409).send({ error: 'command_id_reused' });
+        }
+        if (error instanceof VersionConflictError) {
+          // Клиент решал по устаревшему экрану: состояние уже другое.
+          return reply.code(409).send({ error: 'version_conflict' });
+        }
+        if (error instanceof InvalidTransitionError) {
+          // Повторное завершение приходит сюда: второй награды за одно
+          // действие быть не должно.
+          return reply.code(409).send({ error: 'invalid_transition' });
+        }
+        if (error instanceof QuestNotFoundError) {
+          return reply.code(404).send({ error: 'not_found' });
+        }
+        // 23505 — нарушение уникальности. Запрос корректен, конфликтует он с
+        // уже существующей строкой: два экземпляра на один день дали бы две
+        // награды за одну задачу. Без этой ветки клиент видит 500 и считает
+        // ошибку сервера своей виной.
+        if ((error as { code?: string }).code === '23505') {
+          return reply.code(409).send({ error: 'already_exists' });
         }
         throw error;
       }

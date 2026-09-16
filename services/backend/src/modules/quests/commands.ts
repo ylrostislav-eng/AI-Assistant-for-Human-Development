@@ -1,0 +1,262 @@
+import type { CommandContext, CommandOutcome } from '../../shared/commands/bus.ts';
+import { InvalidCommandPayloadError } from '../goals/commands.ts';
+import {
+  isCompletionVariant,
+  nextStatus,
+  type CompletionVariant,
+  type ExecutionStatus,
+  type QuestCommand,
+} from './state.ts';
+
+/**
+ * Команды заданий: создание шаблона, материализация экземпляра и переходы
+ * выполнения.
+ *
+ * Все переходы идут через автомат из `state.ts`, а не через прямое присвоение
+ * статуса: повторное завершение означало бы вторую награду за одно действие.
+ */
+
+export class VersionConflictError extends Error {}
+export class QuestNotFoundError extends Error {}
+
+function requireString(payload: Record<string, unknown>, key: string): string {
+  const value = payload[key];
+  if (typeof value !== 'string' || value.trim() === '') {
+    throw new InvalidCommandPayloadError(`${key} обязателен`);
+  }
+  return value;
+}
+
+export interface CreateQuestTemplatePayload {
+  readonly title: string;
+  readonly normal_spec: Record<string, unknown>;
+  readonly goal_id?: string;
+  readonly minimum_spec?: Record<string, unknown>;
+  readonly category?: string;
+}
+
+export function parseCreateQuestTemplate(
+  payload: Record<string, unknown>,
+): CreateQuestTemplatePayload {
+  const normalSpec = payload['normal_spec'];
+  if (typeof normalSpec !== 'object' || normalSpec === null || Array.isArray(normalSpec)) {
+    throw new InvalidCommandPayloadError('normal_spec должен быть объектом');
+  }
+
+  const minimumSpec = payload['minimum_spec'];
+  const goalId = payload['goal_id'];
+  const category = payload['category'];
+
+  return {
+    title: requireString(payload, 'title'),
+    normal_spec: normalSpec as Record<string, unknown>,
+    ...(typeof goalId === 'string' ? { goal_id: goalId } : {}),
+    ...(typeof minimumSpec === 'object' && minimumSpec !== null && !Array.isArray(minimumSpec)
+      ? { minimum_spec: minimumSpec as Record<string, unknown> }
+      : {}),
+    ...(typeof category === 'string' ? { category } : {}),
+  };
+}
+
+export function createQuestTemplateHandler(payload: CreateQuestTemplatePayload) {
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const inserted = await context.client.query<{ id: string }>(
+      `INSERT INTO quest_templates (user_id, goal_id, title, category, normal_spec, minimum_spec)
+       VALUES ($1, $2::uuid, $3, COALESCE($4, 'daily'), $5::jsonb, $6::jsonb)
+       RETURNING id`,
+      [
+        context.userId,
+        payload.goal_id ?? null,
+        payload.title,
+        payload.category ?? null,
+        JSON.stringify(payload.normal_spec),
+        payload.minimum_spec === undefined ? null : JSON.stringify(payload.minimum_spec),
+      ],
+    );
+
+    const row = inserted.rows[0];
+    if (row === undefined) {
+      throw new Error('Шаблон задания не создан');
+    }
+    return {
+      result: { template_id: row.id },
+      changes: [{ entity: 'quest_template', id: row.id, operation: 'created' }],
+    };
+  };
+}
+
+export interface MaterializeOccurrencePayload {
+  readonly template_id: string;
+  readonly recurrence_key: string;
+  readonly timezone: string;
+  readonly user_day_id?: string;
+}
+
+export function parseMaterializeOccurrence(
+  payload: Record<string, unknown>,
+): MaterializeOccurrencePayload {
+  const userDayId = payload['user_day_id'];
+  return {
+    template_id: requireString(payload, 'template_id'),
+    recurrence_key: requireString(payload, 'recurrence_key'),
+    timezone: requireString(payload, 'timezone'),
+    ...(typeof userDayId === 'string' ? { user_day_id: userDayId } : {}),
+  };
+}
+
+/**
+ * Экземпляр сохраняет снимок правил шаблона: поздняя правка шаблона не меняет
+ * уже прожитое прошлое (docs/02, раздел 4).
+ */
+export function materializeOccurrenceHandler(payload: MaterializeOccurrencePayload) {
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const template = await context.client.query<{
+      id: string;
+      title: string;
+      category: string;
+      normal_spec: Record<string, unknown>;
+      minimum_spec: Record<string, unknown> | null;
+    }>(
+      'SELECT id, title, category, normal_spec, minimum_spec FROM quest_templates WHERE id = $1',
+      [payload.template_id],
+    );
+
+    const found = template.rows[0];
+    if (found === undefined) {
+      throw new QuestNotFoundError('Шаблон задания не найден');
+    }
+
+    const snapshot = {
+      title: found.title,
+      category: found.category,
+      normal_spec: found.normal_spec,
+      minimum_spec: found.minimum_spec,
+    };
+
+    const inserted = await context.client.query<{ id: string; version: string }>(
+      `INSERT INTO quest_occurrences
+         (user_id, template_id, recurrence_key, timezone_snapshot, template_snapshot,
+          assigned_user_day, placement_state)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::uuid,
+               CASE WHEN $6::uuid IS NULL THEN 'unscheduled' ELSE 'scheduled' END)
+       RETURNING id, version`,
+      [
+        context.userId,
+        payload.template_id,
+        payload.recurrence_key,
+        payload.timezone,
+        JSON.stringify(snapshot),
+        payload.user_day_id ?? null,
+      ],
+    );
+
+    const row = inserted.rows[0];
+    if (row === undefined) {
+      throw new Error('Экземпляр задания не создан');
+    }
+    return {
+      result: { occurrence_id: row.id, version: row.version },
+      changes: [{ entity: 'quest_occurrence', id: row.id, operation: 'created' }],
+    };
+  };
+}
+
+export interface QuestTransitionPayload {
+  readonly occurrence_id: string;
+  readonly expected_version?: number;
+  readonly variant?: CompletionVariant;
+}
+
+export function parseQuestTransition(payload: Record<string, unknown>): QuestTransitionPayload {
+  const expectedVersion = payload['expected_version'];
+  const variant = payload['variant'];
+
+  if (variant !== undefined && !isCompletionVariant(variant)) {
+    throw new InvalidCommandPayloadError('variant должен быть normal или minimum');
+  }
+
+  return {
+    occurrence_id: requireString(payload, 'occurrence_id'),
+    ...(typeof expectedVersion === 'number' ? { expected_version: expectedVersion } : {}),
+    ...(variant === undefined ? {} : { variant }),
+  };
+}
+
+/**
+ * Переход выполнения.
+ *
+ * Строка берётся `FOR UPDATE`: без блокировки две одновременные команды
+ * прочитали бы одно состояние и обе сочли переход допустимым.
+ *
+ * Версия проверяется, если клиент её прислал: он мог принимать решение по
+ * устаревшему экрану, и тогда переход относится к состоянию, которого уже нет.
+ */
+export function questTransitionHandler(command: QuestCommand, payload: QuestTransitionPayload) {
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const current = await context.client.query<{
+      id: string;
+      execution_status: ExecutionStatus;
+      version: string;
+    }>(
+      'SELECT id, execution_status, version FROM quest_occurrences WHERE id = $1 FOR UPDATE',
+      [payload.occurrence_id],
+    );
+
+    const occurrence = current.rows[0];
+    if (occurrence === undefined) {
+      throw new QuestNotFoundError('Экземпляр задания не найден');
+    }
+    if (
+      payload.expected_version !== undefined &&
+      Number(occurrence.version) !== payload.expected_version
+    ) {
+      throw new VersionConflictError(
+        `Экземпляр изменился: ожидалась версия ${payload.expected_version}, текущая ${occurrence.version}`,
+      );
+    }
+
+    const target = nextStatus(occurrence.execution_status, command);
+    const variant = command === 'complete_quest' ? (payload.variant ?? 'normal') : null;
+
+    const updated = await context.client.query<{ version: string }>(
+      `UPDATE quest_occurrences
+          SET execution_status = $2,
+              completion_variant = $3,
+              version = version + 1,
+              updated_at = now()
+        WHERE id = $1
+        RETURNING version`,
+      [payload.occurrence_id, target, variant],
+    );
+
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw new Error('Состояние задания не обновлено');
+    }
+
+    return {
+      result: {
+        occurrence_id: payload.occurrence_id,
+        execution_status: target,
+        version: row.version,
+        ...(variant === null ? {} : { variant }),
+      },
+      changes: [
+        {
+          entity: 'quest_occurrence',
+          id: payload.occurrence_id,
+          operation: 'status_changed',
+          execution_status: target,
+        },
+      ],
+      // Награда считается отдельно детерминированным движком (Phase 3); здесь
+      // фиксируется только факт выполнения.
+      events: [
+        {
+          kind: 'quest_status_changed',
+          payload: { occurrence_id: payload.occurrence_id, execution_status: target },
+        },
+      ],
+    };
+  };
+}
