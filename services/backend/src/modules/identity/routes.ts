@@ -4,9 +4,12 @@ import type { FastifyInstance } from 'fastify';
 
 import type { AppConfig } from '../../config.ts';
 import { withTransaction, type Database } from '../../shared/db/pool.ts';
+import { logError } from '../../shared/logging/logger.ts';
 import {
+  ExpiredTokenError,
   issueSession,
   revokeFamily,
+  RevokedFamilyError,
   rotateSession,
   TokenReuseError,
   UnknownTokenError,
@@ -110,11 +113,24 @@ export function registerIdentityRoutes(
         // обычного отказа, потому что семья сессий отозвана целиком.
         return reply.code(401).send({ error: 'token_reuse_detected' });
       }
-      if (error instanceof UnknownTokenError) {
+      // Истёкший и отозванный токен не различаются в ответе намеренно.
+      if (
+        error instanceof UnknownTokenError ||
+        error instanceof ExpiredTokenError ||
+        error instanceof RevokedFamilyError
+      ) {
         return reply.code(401).send({ error: 'invalid_refresh_token' });
       }
-      // Истёкший и отозванный токен не различаются в ответе намеренно.
-      return reply.code(401).send({ error: 'invalid_refresh_token' });
+      // Всё остальное — сбой инфраструктуры, а не приговор сессии. Прежний
+      // общий catch отвечал 401 и при недоступной базе; для клиента это
+      // означает «сессия недействительна», и он стирает локальный журнал с
+      // несинхронизированными записями из-за временного сбоя
+      // (R7 в docs/15-backend-review.md).
+      logError('session_refresh_failed', error, {
+        request_id: request.id,
+        route: 'POST /auth/refresh',
+      });
+      return reply.code(503).send({ error: 'service_unavailable', request_id: request.id });
     }
   });
 

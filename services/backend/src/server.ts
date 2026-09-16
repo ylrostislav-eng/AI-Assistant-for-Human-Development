@@ -1,6 +1,7 @@
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
 import { createPool } from './shared/db/pool.ts';
+import { logError } from './shared/logging/logger.ts';
 import { assertSafeDatabaseRole } from './shared/db/role-guard.ts';
 
 /**
@@ -26,7 +27,7 @@ async function main(): Promise<void> {
       process.exitCode = 0;
     } catch (error) {
       process.exitCode = 1;
-      console.error(`Ошибка остановки по сигналу ${signal}:`, error);
+      logError('shutdown_failed', error, { method: signal });
     }
   };
 
@@ -38,6 +39,8 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error('Не удалось запустить API:', error);
+  // Строка подключения с паролем печаталась бы здесь целиком. Код ошибки
+  // различает «нет сервера» и «неверный пароль» — этого достаточно для разбора.
+  logError('api_start_failed', error);
   process.exit(1);
 });

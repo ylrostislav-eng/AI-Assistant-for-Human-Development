@@ -1,6 +1,7 @@
 import { loadConfig } from './config.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
 import { createPool } from './shared/db/pool.ts';
+import { logError } from './shared/logging/logger.ts';
 
 /**
  * Процесс фоновой обработки. Отдельный от API намеренно (docs/01, раздел 1):
@@ -54,7 +55,7 @@ async function main(): Promise<void> {
     } catch (error) {
       // Ошибка одного прохода не должна останавливать процесс: очередь
       // переживает временную недоступность базы.
-      console.error('Сбой прохода worker:', error);
+      logError('worker_pass_failed', error);
     }
 
     await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -65,6 +66,6 @@ async function main(): Promise<void> {
 }
 
 main().catch((error: unknown) => {
-  console.error('Не удалось запустить worker:', error);
+  logError('worker_start_failed', error);
   process.exit(1);
 });

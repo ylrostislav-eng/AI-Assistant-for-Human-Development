@@ -5,6 +5,7 @@ import { registerIdentityRoutes } from './modules/identity/routes.ts';
 import { registerCommandRoutes } from './modules/sync/routes.ts';
 import { registerAuth } from './shared/auth/require-auth.ts';
 import { checkConnection, type Database } from './shared/db/pool.ts';
+import { logError } from './shared/logging/logger.ts';
 import { createValidator } from './shared/schema/validator.ts';
 
 export interface AppDependencies {
@@ -49,7 +50,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // Необработанная ошибка не должна пересказывать клиенту внутренности: по
   // умолчанию Fastify возвращает текст исключения, и живая проверка показала
   // в ответе имя колонки базы данных. Это разведка схемы бесплатно.
-  app.setErrorHandler((error: unknown, _request, reply) => {
+  app.setErrorHandler((error: unknown, request, reply) => {
     const failure = error as { statusCode?: number; code?: string };
     // Ошибки валидации самого Fastify сообщают о запросе клиента, а не о
     // сервере, и их скрывать не нужно.
@@ -57,8 +58,16 @@ export function createApp(deps: AppDependencies): FastifyInstance {
     if (status < 500) {
       return reply.code(status).send({ error: failure.code ?? 'bad_request' });
     }
-    console.error('Необработанная ошибка запроса:', error);
-    return reply.code(500).send({ error: 'internal_error' });
+    // Ошибка записывается выжимкой: печать объекта целиком выводила бы detail
+    // PostgreSQL со значением строки и адрес базы (R7 в docs/15-backend-review.md).
+    logError('request_failed', error, {
+      request_id: request.id,
+      route: `${request.method} ${request.url}`,
+      status,
+    });
+    // Идентификатор запроса возвращается клиенту: без него человек не может
+    // сослаться на свой случай, а с текстом ошибки уехали бы внутренности.
+    return reply.code(500).send({ error: 'internal_error', request_id: request.id });
   });
 
   // Доступ закрыт по умолчанию: проверка вешается раньше маршрутов, публичные

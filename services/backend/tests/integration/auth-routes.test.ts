@@ -326,7 +326,11 @@ describe('ошибки сервера', () => {
       });
 
       expect(response.statusCode).toBe(500);
-      expect(response.json()).toEqual({ error: 'internal_error' });
+      // Кроме кода ошибки — только идентификатор запроса: без него человек не
+      // может сослаться на свой случай, а с текстом ошибки уехали бы
+      // внутренности.
+      expect(Object.keys(response.json() as object).sort()).toEqual(['error', 'request_id']);
+      expect(response.json()).toMatchObject({ error: 'internal_error' });
       // Живая проверка показала в ответе имя колонки базы — это разведка
       // схемы бесплатно.
       expect(response.body).not.toContain('секрет');
