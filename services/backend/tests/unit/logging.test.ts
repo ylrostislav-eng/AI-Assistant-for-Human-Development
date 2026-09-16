@@ -54,6 +54,19 @@ describe('R7: запись ошибок', () => {
     expect(output).toContain('23505');
   });
 
+  it('вид собственной ошибки не теряется', () => {
+    // `class ConfigError extends Error {}` не задаёт `name`, и в логе
+    // оказывалось безликое «Error». Живой запуск на Railway это и показал:
+    // сервис не стартовал, а по логу нельзя было понять, дело в настройке или
+    // в базе — при том что текст ошибки намеренно не выводится.
+    class ConfigError extends Error {}
+
+    const record = JSON.parse(capture(() => logError('api_start_failed', new ConfigError('нет')))) as
+      Record<string, unknown>;
+
+    expect(record['error_name']).toBe('ConfigError');
+  });
+
   it('пишет вид ошибки и отпечаток', () => {
     const error = Object.assign(new Error(`сбой: ${SENTINEL}`), { name: 'DatabaseError' });
 

@@ -67,3 +67,69 @@ docker compose -f ops/compose.yaml up --build
 ## Telegram deployment
 
 Текущий план T-04 — web assets + API/worker/PostgreSQL, HTTPS origin/webhook, bot configuration, allowlist, backups/restore. Railway — кандидат, не проверенное развёртывание. Подробности в [архитектуре](../docs/01-system-architecture.md) и [плане](../docs/10-implementation-plan.md). Наличие рабочего локального сервера не доказывает production readiness.
+
+
+## Railway: первое развёртывание
+
+Проект `ai-assistant-system`, окружение `production`. Два сервиса: `Postgres`
+(образ `postgres-ssl:18`, том 5 ГБ) и `api` (сборка из `ops/Dockerfile`,
+ветка `main` репозитория).
+
+Порядок важен: роли создаются **до** миграций, иначе миграция останавливается —
+ей некому выдавать права.
+
+### 1. Роли
+
+Managed PostgreSQL не даёт мигратору создавать роли автоматически, поэтому они
+заводятся один раз вручную. Строка подключения владельца собирается из
+переменных сервиса `Postgres` в панели Railway (`PGPASSWORD`) и адреса TCP-прокси
+(`RAILWAY_TCP_PROXY_DOMAIN`, `RAILWAY_TCP_PROXY_PORT`).
+
+```sql
+CREATE ROLE app_runtime LOGIN PASSWORD 'свой пароль' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+CREATE ROLE app_worker  LOGIN PASSWORD 'свой пароль' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+```
+
+Пароли придумываются здесь же и больше нигде не хранятся, кроме переменных
+Railway. В репозиторий они не попадают.
+
+### 2. Миграции
+
+Выполняются владельцем таблиц, не ролью приложения:
+
+```bash
+DATABASE_URL='postgres://postgres:ПАРОЛЬ@ПРОКСИ:ПОРТ/railway' npm run migrate
+```
+
+### 3. Переменные сервиса `api`
+
+Заданы заранее: `RAILWAY_DOCKERFILE_PATH`, `NODE_ENV`, `HOST`, `PORT`,
+`DEV_AUTH_ENABLED=false`, `TELEGRAM_ALLOWED_USER_IDS`, сроки проверки подписи и
+`DATABASE_URL` со ссылкой на пароль роли приложения.
+
+Вручную в панели добавляются два секрета:
+
+| Переменная | Что это |
+|---|---|
+| `APP_RUNTIME_PASSWORD` | Пароль роли `app_runtime` из шага 1 |
+| `TELEGRAM_BOT_TOKEN` | Токен бота от BotFather |
+
+`DATABASE_URL` собран как
+`postgres://app_runtime:${{APP_RUNTIME_PASSWORD}}@${{Postgres.RAILWAY_PRIVATE_DOMAIN}}:5432/${{Postgres.PGDATABASE}}`:
+приложение ходит в базу по внутренней сети Railway и под ролью без
+`SUPERUSER`/`BYPASSRLS`. Под владельцем таблиц политики изоляции не действуют, и
+запуск в production с такой ролью отклоняется проверкой на старте — это не
+перестраховка, а единственное, что отделяет «изоляция работает» от «изоляция
+молча отсутствует».
+
+### Что уже проверено живым запуском
+
+- Сборка образа по `ops/Dockerfile` проходит на Railway целиком, включая
+  копирование `packages` — того самого каталога, которого не хватало в первом
+  наброске.
+- Редактированная запись ошибок работает и в production: неудачный старт дал
+  строку `{"event":"api_start_failed","error_name":...,"fingerprint":...}` —
+  без строки подключения и без пароля.
+- Там же нашлась недоработка самой записи: собственные классы ошибок не задают
+  `name`, и в логе оказывалось безликое `Error`. Исправлено — теперь берётся имя
+  класса.

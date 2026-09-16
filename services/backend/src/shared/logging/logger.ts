@@ -70,10 +70,21 @@ export function logError(
   error: unknown,
   meta: Readonly<Record<string, unknown>> = {},
 ): void {
-  const failure = error as { name?: unknown; code?: unknown };
-  const name = typeof failure?.name === 'string' && CODE_PATTERN.test(failure.name)
-    ? failure.name
-    : 'Error';
+  const failure = error as { name?: unknown; code?: unknown; constructor?: { name?: unknown } };
+
+  // `class ConfigError extends Error {}` не задаёт `name`, и в логе оказывалось
+  // безликое «Error»: по нему нельзя отличить ошибку настройки от ошибки базы,
+  // а текст ошибки здесь намеренно не выводится. Имя класса возвращает
+  // различимость, ничего не раскрывая. Нашлось на живом запуске: сервис не
+  // стартовал, и по логу было не понять почему.
+  const constructorName = failure?.constructor?.name;
+  const candidate =
+    typeof failure?.name === 'string' && failure.name !== 'Error'
+      ? failure.name
+      : typeof constructorName === 'string'
+        ? constructorName
+        : 'Error';
+  const name = CODE_PATTERN.test(candidate) ? candidate : 'Error';
 
   const record: Record<string, unknown> = {
     level: 'error',
