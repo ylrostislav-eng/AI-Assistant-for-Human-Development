@@ -42,7 +42,7 @@ flowchart TD
 | Локальные данные | IndexedDB, transactional command journal, repositories | Проверить в T-05; wrapper только при необходимости |
 | Секреты клиента | Access в памяти; refresh в SecureStorage при поддержке | Нет tokens в IndexedDB/localStorage; fallback — повторный login |
 | Backend | Существующие TypeScript strict, Fastify, node-postgres | Сохранить pins/lockfile; [toolchain](toolchain.md) |
-| Jobs | PostgreSQL outbox + worker с lease fencing | Основа есть, исправления T-00b обязательны |
+| Jobs | PostgreSQL outbox + worker с lease fencing | Fencing сделан в T-00b; реальные handlers и delivery ledger — нет |
 | AI | AIProvider; отдельные ASR/TTS adapters | Серверные ключи; модель после eval |
 | Contracts | JSON Schema + OpenAPI 3.1; общие DTO | OpenAPI перечисляет только реализованные endpoints |
 | Web tests | Vitest + Playwright; реальные Telegram clients | Browser mocks не доказывают свойства WebView |
@@ -110,9 +110,9 @@ sequenceDiagram
 ## 6. Worker и внешняя доставка
 
 1. Dispatcher атомарно переводит outbox в jobs с уникальным dedupe key.
-2. Claim берёт только свободную вместимость worker. Каждая аренда имеет уникальный `lease_token`/generation, `lease_until`, attempt и max_attempts.
-3. Success/failure/renewal — compare-and-set по актуальному token. Устаревший исполнитель не меняет новую аренду. Истечение lease не разрешает превышать max_attempts.
-4. Долгая работа продлевает аренду; crash/retry/backoff/jitter/dead-letter тестируются с двумя workers.
+2. Claim берёт только свободную вместимость worker. Каждая аренда имеет уникальный `lease_token`, `lease_until`, attempt и max_attempts. Обработчики выполняются последовательно, поэтому и резервируются по одному: пачка, взятая разом, начинает аренду всем заданиям одновременно, и у последнего она истекает раньше, чем до него доходит очередь.
+3. Success/failure/renewal — compare-and-set по актуальному token. Устаревший исполнитель не меняет новую аренду. Истечение lease не разрешает превышать max_attempts: задание с исчерпанными попытками уходит в dead_letter, а не выдаётся на новый круг.
+4. Долгая работа продлевает аренду (`renewLease`, тот же compare-and-set); crash/retry/backoff/jitter/dead-letter тестируются с двумя workers.
 5. Domain handlers используют CommandBus и deterministic command ID. Внешний HTTP идёт после commit.
 6. У Telegram sends нет нашей гарантии exactly-once: timeout может означать уже доставленное сообщение. Delivery ledger хранит `pending/sending/sent/unknown/failed`, известный message_id редактируется; неизвестный исход не запускает бесконечную рассылку.
 7. Перед reminder проверить revision/status, quiet hours, consent, blocked state. Фоновый cron не зависит от Mini App.

@@ -82,11 +82,21 @@ async function createGoalViaCommand(userId: string, title: string): Promise<void
   );
 }
 
+interface InsertedJob {
+  readonly id: string;
+  readonly attempts: number;
+  readonly maxAttempts: number;
+}
+
+/**
+ * Созданное, но ещё не зарезервированное задание: маркера аренды у него нет,
+ * поэтому это не `Job` — владеть им пока некому.
+ */
 async function insertJob(
   userId: string,
   kind: string,
   options: { dueAt?: string; attempts?: number; maxAttempts?: number } = {},
-): Promise<Job> {
+): Promise<InsertedJob> {
   const result = await ownerDb.query<{ id: string; attempts: number; max_attempts: number }>(
     `INSERT INTO jobs (user_id, kind, dedupe_key, payload, due_at, attempts, max_attempts)
      VALUES ($1, $2, $3, '{}'::jsonb, COALESCE($4::timestamptz, now()), $5, $6)
@@ -97,14 +107,7 @@ async function insertJob(
   if (row === undefined) {
     throw new Error('Задание не создано');
   }
-  return {
-    id: row.id,
-    userId,
-    kind,
-    payload: {},
-    attempts: row.attempts,
-    maxAttempts: row.max_attempts,
-  };
+  return { id: row.id, attempts: row.attempts, maxAttempts: row.max_attempts };
 }
 
 describe('транзакционный outbox', () => {
@@ -236,12 +239,13 @@ describe('резервирование заданий', () => {
 
   it('выполненное задание не резервируется снова', async () => {
     const job = await insertJob(USER_A, 'завершённое');
-    await claimJobs(workerDb, { limit: 10 });
-    await completeJob(workerDb, job.id);
+    const claimed = (await claimJobs(workerDb, { limit: 10 })).find((row) => row.id === job.id);
+    expect(claimed).toBeDefined();
+    expect(await completeJob(workerDb, claimed as Job)).toBe(true);
 
-    const claimed = await claimJobs(workerDb, { limit: 10, leaseMs: 1 });
+    const again = await claimJobs(workerDb, { limit: 10, leaseMs: 1 });
 
-    expect(claimed.map((row) => row.id)).not.toContain(job.id);
+    expect(again.map((row) => row.id)).not.toContain(job.id);
   });
 });
 

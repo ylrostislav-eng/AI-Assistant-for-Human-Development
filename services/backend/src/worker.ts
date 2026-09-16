@@ -36,10 +36,19 @@ async function main(): Promise<void> {
     try {
       const dispatched = await dispatchOutbox(database, { kinds: Object.keys(HANDLERS) });
       const batch = await runJobBatch(database, HANDLERS);
-      if (dispatched.queued > 0 || batch.done > 0 || batch.retried > 0 || batch.deadLettered > 0) {
+      if (
+        dispatched.queued > 0 ||
+        batch.done > 0 ||
+        batch.retried > 0 ||
+        batch.deadLettered > 0 ||
+        batch.leasesLost > 0
+      ) {
         console.log(
           `В очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
-            `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}`,
+            `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}; ` +
+            // Потерянная аренда означает, что проход шёл дольше её срока: это
+            // повод увеличить срок, а не молча пропустить строку в отчёте.
+            `аренда потеряна: ${batch.leasesLost}`,
         );
       }
     } catch (error) {

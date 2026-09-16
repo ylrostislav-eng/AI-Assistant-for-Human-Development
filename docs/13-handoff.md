@@ -16,7 +16,7 @@
 | DB | Миграции 001–008, identity/profile/goals/quests/calendar/sync/jobs, RLS/roles | Activity/ledger и новые Telegram tables по задачам |
 | Identity | Dev synthetic login, opaque access/refresh, rotation/logout, закрытый доступ | Signed Telegram login + external identities + installation binding |
 | Commands | Bus, receipts, user counters, batches, own-key registry, семантический hash, каноническая цель/версия, закрытые схемы нагрузки (**T-00a выполнен**) | Расширения domain; политика фоновых исполнителей |
-| Worker | Outbox/dispatch/jobs/lease/retry entrypoint | T-00b fencing/attempts; реальные domain/Telegram handlers |
+| Worker | Outbox/dispatch/jobs, аренда с владельцем, CAS на завершении/неудаче/продлении, ограниченный повторный захват (**T-00b выполнен**) | Реальные domain/Telegram handlers, delivery ledger |
 | Quests | Create template/materialize/start/complete/partial/cancel states | Сохранение Activity/объёма/вариантов, timer/undo; сейчас completion status-only |
 | Time | Pure CalendarMath, ensureUserDay, unit/integration | T-00c/d DST и policy transition; Scheduler/day-close/reminders |
 | Клиент/бот | Архитектура и будущие контракты | Mini App, webhook, real Telegram auth, read/bootstrap/pull API отсутствуют |
@@ -31,7 +31,7 @@
 
 - ~~R1: top-level expected_version/aggregate теряются при dispatch.~~ Исправлено в T-00a (`453cf3f`).
 - ~~R2: hash команды не учитывает kind, возвращается receipt другой операции.~~ Исправлено в T-00a (`453cf3f`), миграция 009.
-- R3: нет lease ownership CAS; expired lease может превысить max attempts.
+- ~~R3: нет lease ownership CAS; expired lease может превысить max attempts.~~ Исправлено в T-00b, миграция 010.
 - R4: 8 из 12 проб DST gap по 5 минут дают неверную первую допустимую границу.
 - R5: смена boundary 04:00→00:00 создаёт overlapping user days.
 - R6: **частично исправлено в T-00a** (`a2b2345` и далее): закрытые схемы нагрузки по видам, own-key registry, minimum только по принятой спецификации. Осталось из P1-06: Activity root с фактическим объёмом/длительностью/временем, source/variant snapshot, correction path.
@@ -50,6 +50,23 @@
 Регрессионные сценарии написаны **до** исправления и проверены отрицательным контролем: с выключенными проверками падают именно они, законные пути продолжают проходить.
 
 Не сделано в T-00a: R3, R4, R5, R7 и Activity-часть R6 — по ним код не менялся.
+
+### 3.2 Что сделано в T-00b
+
+Миграция 010 добавляет `lease_token`: маркер владения арендой. Завершение,
+неудача и продление проверяют его compare-and-set, поэтому ожившая после паузы
+задача не трогает работу, которую уже взял другой. Повторный захват ограничен
+`attempts < max_attempts`, а задание с исчерпанными попытками и истёкшей
+арендой уходит в dead_letter, а не остаётся навсегда в `running`. Резервирование
+идёт по одному заданию: обработчики выполняются последовательно, и пачка,
+взятая разом, теряла аренду на последних заданиях ещё до их запуска.
+
+Четыре сценария R3 и два сценария продления написаны с двумя исполнителями и
+проверены отрицательным контролем: с убранными проверками падают все четыре.
+
+**Fencing не обещает exactly-once внешней отправки.** Таймаут запроса в Telegram
+может означать уже доставленное сообщение; для этого нужен отдельный delivery
+ledger (docs/01, раздел 6, пункт 6), которого пока нет.
 
 ## 4. Проверки T-DOC-01
 
