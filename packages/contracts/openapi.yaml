@@ -183,6 +183,69 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /commands:
+    post:
+      summary: Выполнить команду
+      description: |
+        Единая точка изменений. Пользователь берётся из access-токена: в
+        конверте нет поля пользователя, и схема закрыта для посторонних полей,
+        поэтому подставить чужой идентификатор нечем.
+
+        Повторная доставка того же `command_id` не создаёт второго эффекта и
+        возвращает прежнюю квитанцию с `duplicate: true`. Тот же `command_id` с
+        другой нагрузкой — конфликт: подтверждать выполнение того, чего сервер
+        не делал, нельзя.
+
+        Тело проверяется по `schemas/command-envelope.schema.json` — тому же
+        файлу, по которому клиент собирает запрос.
+      operationId: executeCommand
+      security:
+        - accessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: './schemas/command-envelope.schema.json'
+      responses:
+        '200':
+          description: Команда выполнена либо распознана как повтор
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [command_id, committed_seq, duplicate, result]
+                properties:
+                  command_id:
+                    type: string
+                    format: uuid
+                  committed_seq:
+                    type: string
+                    description: Номер изменения; передаётся строкой, чтобы не терять точность больших чисел.
+                  duplicate:
+                    type: boolean
+                  result:
+                    type: object
+        '400':
+          description: Конверт не прошёл проверку, неизвестный вид команды или негодная нагрузка
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '409':
+          description: Тот же command_id уже выполнен с другой нагрузкой
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /health/ready:
     get:
       summary: Проба готовности

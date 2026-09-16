@@ -1,9 +1,23 @@
 import Fastify, { type FastifyInstance } from 'fastify';
 
+import * as ajvFormatsModule from 'ajv-formats';
+import * as ajvModule from 'ajv/dist/2020.js';
+
 import type { AppConfig } from './config.ts';
 import { registerIdentityRoutes } from './modules/identity/routes.ts';
+import { registerCommandRoutes } from './modules/sync/routes.ts';
 import { registerAuth } from './shared/auth/require-auth.ts';
 import { checkConnection, type Database } from './shared/db/pool.ts';
+
+/**
+ * ajv и ajv-formats собраны как CommonJS: под ESM класс приходит в свойстве
+ * default, а типы описывают пространство имён модуля.
+ */
+interface AjvLike {
+  compile(schema: object): (data: unknown) => boolean;
+}
+const Ajv2020 = (ajvModule as unknown as { default: new (options?: object) => AjvLike }).default;
+const addFormats = (ajvFormatsModule as unknown as { default: (ajv: AjvLike) => void }).default;
 
 export interface AppDependencies {
   readonly config: AppConfig;
@@ -23,6 +37,7 @@ export const API_ROUTES = [
   { method: 'post', path: '/auth/refresh' },
   { method: 'post', path: '/auth/logout' },
   { method: 'get', path: '/me' },
+  { method: 'post', path: '/commands' },
 ] as const;
 
 /**
@@ -35,6 +50,13 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // добавляются отдельной задачей (docs/01, раздел 2), а до неё вывод сырых
   // запросов рискует записать персональный текст.
   const app = Fastify({ logger: false });
+
+  // Схемы контрактов написаны в JSON Schema 2020-12, а встроенный валидатор
+  // Fastify настроен на draft-07 и молча проигнорировал бы часть ключевых слов.
+  // Поэтому подключается валидатор нужного диалекта.
+  const ajv = new Ajv2020({ strict: false, allErrors: false, coerceTypes: false });
+  addFormats(ajv);
+  app.setValidatorCompiler(({ schema }) => ajv.compile(schema as object));
 
   // Необработанная ошибка не должна пересказывать клиенту внутренности: по
   // умолчанию Fastify возвращает текст исключения, и живая проверка показала
@@ -55,6 +77,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   // пути перечислены явно в PUBLIC_PATHS.
   registerAuth(app, deps.database);
   registerIdentityRoutes(app, deps.config, deps.database);
+  registerCommandRoutes(app, deps.database);
 
   // Liveness: процесс жив и отвечает. Намеренно не трогает БД — иначе рестарт
   // приложения зависит от доступности базы и перезапуск лечит не то.
