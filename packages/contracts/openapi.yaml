@@ -391,6 +391,175 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /bootstrap:
+    get:
+      summary: Начальный снимок состояния
+      description: |
+        Снимок собирается в одной транзакции `repeatable read` вместе с
+        курсором: собранный из разных мгновений, он противоречил бы
+        собственному курсору, и часть изменений не попала бы ни в него, ни в
+        последующую ленту.
+
+        После снимка клиент запрашивает изменения с `after = snapshot_cursor`.
+
+        Списки ограничены по объёму. Обрезание объявляется в `truncated`: молча
+        укороченный список клиент принял бы за полный и решил, что остальное
+        удалено.
+      operationId: getBootstrap
+      security:
+        - accessToken: []
+      responses:
+        '200':
+          description: Снимок и курсор
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  [server_time, snapshot_cursor, min_supported_schema, user, profile, goals,
+                   quests, truncated]
+                properties:
+                  server_time:
+                    type: string
+                    format: date-time
+                  snapshot_cursor:
+                    type: string
+                    description: Номер последнего изменения; строкой, чтобы не терять точность.
+                  min_supported_schema:
+                    type: integer
+                  user:
+                    type: object
+                  profile:
+                    type: object
+                    nullable: true
+                  goals:
+                    type: array
+                    items:
+                      type: object
+                  quests:
+                    type: array
+                    items:
+                      type: object
+                  truncated:
+                    type: object
+                    description: Какие списки обрезаны пределом снимка.
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Аккаунт недоступен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
+  /sync/pull:
+    get:
+      summary: Лента подтверждённых изменений
+      description: |
+        Возвращает целые пачки с номером больше `after`. Устройство двигает
+        курсор только по непрерывной последовательности: пропущенная пачка —
+        это изменения, которых оно не увидит никогда.
+
+        Первая страница фиксирует `upper_bound_seq`; последующие передают его
+        обратно, чтобы постраничный обход не смешивал состояние до и после
+        новых команд.
+
+        Разрыв между курсором и первой доступной пачкой означает, что
+        промежуточные удалены по сроку удержания: ответ 410, клиент берёт
+        свежий снимок и повторяет отложенные команды. Тихая выдача остатка
+        оставила бы его в уверенности, что он получил всё.
+      operationId: pullChanges
+      security:
+        - accessToken: []
+      parameters:
+        - name: after
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Курсор устройства; по умолчанию 0.
+        - name: limit
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+          description: Размер страницы; по умолчанию 100.
+        - name: upper_bound_seq
+          in: query
+          required: false
+          schema:
+            type: integer
+            minimum: 0
+          description: Граница, зафиксированная первой страницей.
+      responses:
+        '200':
+          description: Пачки изменений и следующий курсор
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required:
+                  [batches, next_after, has_more, upper_bound_seq, min_supported_schema,
+                   server_time]
+                properties:
+                  batches:
+                    type: array
+                    items:
+                      type: object
+                      required: [seq, changes, schema_version, created_at]
+                      properties:
+                        seq:
+                          type: string
+                        changes:
+                          type: array
+                          items:
+                            type: object
+                        schema_version:
+                          type: integer
+                        created_at:
+                          type: string
+                          format: date-time
+                  next_after:
+                    type: integer
+                  has_more:
+                    type: boolean
+                  upper_bound_seq:
+                    type: string
+                  min_supported_schema:
+                    type: integer
+                  server_time:
+                    type: string
+                    format: date-time
+        '400':
+          description: Негодный курсор (`invalid_cursor`) или размер страницы (`invalid_limit`)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '410':
+          description: |
+            Курсор устарел: промежуточные пачки удалены по сроку удержания.
+            Нужен свежий снимок и повтор отложенных команд.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /health/ready:
     get:
       summary: Проба готовности

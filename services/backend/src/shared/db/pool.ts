@@ -24,13 +24,29 @@ export function createPool(config: DatabaseConfig): Database {
  * утечка клиента при исключении исчерпывает пул и выглядит позже как зависание
  * несвязанного запроса.
  */
+export interface TransactionOptions {
+  /**
+   * Уровень изоляции. `repeatable read` нужен там, где несколько запросов
+   * обязаны видеть одно состояние: снимок, собранный из разных мгновений,
+   * противоречит собственному курсору, и часть изменений не попадёт ни в него,
+   * ни в последующую ленту.
+   *
+   * Задаётся в самом `BEGIN`: отдельная команда `SET TRANSACTION` допустима
+   * только до первого запроса, а контекст пользователя устанавливается раньше.
+   */
+  readonly isolation?: 'repeatable read';
+}
+
 export async function withTransaction<T>(
   db: Database,
   run: (client: TransactionClient) => Promise<T>,
+  options: TransactionOptions = {},
 ): Promise<T> {
   const client = await db.connect();
   try {
-    await client.query('BEGIN');
+    await client.query(
+      options.isolation === undefined ? 'BEGIN' : `BEGIN ISOLATION LEVEL ${options.isolation}`,
+    );
     const result = await run(client);
     await client.query('COMMIT');
     return result;

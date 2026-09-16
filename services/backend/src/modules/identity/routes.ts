@@ -133,6 +133,13 @@ export function registerIdentityRoutes(
          ON CONFLICT (auth_issuer, auth_subject) DO NOTHING`,
         [userId, subject],
       );
+      // Профиль заводится вместе с пользователем: снимок для клиента читает из
+      // него пояс и границу дня, и состояния «человек без профиля» быть не
+      // должно ни на одном мгновении.
+      await client.query(
+        'INSERT INTO user_profiles (user_id) VALUES ($1) ON CONFLICT (user_id) DO NOTHING',
+        [userId],
+      );
     });
 
     const session = await issueSession(database, userId, null);
