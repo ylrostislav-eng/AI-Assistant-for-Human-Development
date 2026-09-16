@@ -1,6 +1,14 @@
 import type { CommandContext, CommandOutcome, CommandRequest } from '../../shared/commands/bus.ts';
 import { InvalidCommandPayloadError } from '../goals/commands.ts';
 import {
+  assertFactMatchesVariant,
+  findAcceptedActivity,
+  parseActivityFact,
+  recordActivity,
+  type ActivityVariant,
+  type EffortSpec,
+} from './activity.ts';
+import {
   isCompletionVariant,
   nextStatus,
   type CompletionVariant,
@@ -18,6 +26,51 @@ import {
 
 export class VersionConflictError extends Error {}
 export class QuestNotFoundError extends Error {}
+
+interface TemplateSnapshot {
+  readonly normal_spec: EffortSpec;
+  readonly minimum_spec: EffortSpec | null;
+}
+
+/**
+ * Спецификации берутся из снимка экземпляра, а не из текущего шаблона: правка
+ * шаблона задним числом не должна менять условия уже прожитого дня.
+ */
+function specsOf(snapshot: Record<string, unknown>): TemplateSnapshot {
+  const taken = snapshot as unknown as TemplateSnapshot;
+  return { normal_spec: taken.normal_spec, minimum_spec: taken.minimum_spec ?? null };
+}
+
+/** Строка экземпляра, заблокированная на время перехода. */
+interface LockedOccurrence {
+  readonly id: string;
+  readonly execution_status: ExecutionStatus;
+  readonly version: string;
+  readonly template_snapshot: Record<string, unknown>;
+}
+
+async function lockOccurrence(
+  context: CommandContext,
+  occurrenceId: string,
+  expectedVersion: number | null,
+): Promise<LockedOccurrence> {
+  const current = await context.client.query<LockedOccurrence>(
+    `SELECT id, execution_status, version, template_snapshot
+       FROM quest_occurrences WHERE id = $1 FOR UPDATE`,
+    [occurrenceId],
+  );
+
+  const occurrence = current.rows[0];
+  if (occurrence === undefined) {
+    throw new QuestNotFoundError('Экземпляр задания не найден');
+  }
+  if (expectedVersion !== null && Number(occurrence.version) !== expectedVersion) {
+    throw new VersionConflictError(
+      `Экземпляр изменился: ожидалась версия ${expectedVersion}, текущая ${occurrence.version}`,
+    );
+  }
+  return occurrence;
+}
 
 function requireString(payload: Record<string, unknown>, key: string): string {
   const value = payload[key];
@@ -217,45 +270,33 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
   }
 
   return async (context: CommandContext): Promise<CommandOutcome> => {
-    const current = await context.client.query<{
-      id: string;
-      execution_status: ExecutionStatus;
-      version: string;
-      template_snapshot: Record<string, unknown>;
-    }>(
-      `SELECT id, execution_status, version, template_snapshot
-         FROM quest_occurrences WHERE id = $1 FOR UPDATE`,
-      [occurrenceId],
-    );
-
-    const occurrence = current.rows[0];
-    if (occurrence === undefined) {
-      throw new QuestNotFoundError('Экземпляр задания не найден');
-    }
-    if (
-      request.expectedVersion !== null &&
-      Number(occurrence.version) !== request.expectedVersion
-    ) {
-      throw new VersionConflictError(
-        `Экземпляр изменился: ожидалась версия ${request.expectedVersion}, текущая ${occurrence.version}`,
-      );
-    }
-
+    const occurrence = await lockOccurrence(context, occurrenceId, request.expectedVersion);
     const target = nextStatus(occurrence.execution_status, command);
     const completionVariant =
       command === 'complete_quest' ? ((variant as CompletionVariant | undefined) ?? 'normal') : null;
 
-    // Минимум засчитывается только по принятой заранее спецификации. Без неё
-    // «минимальное выполнение» ничем не ограничено, и меньшая награда
-    // выдавалась бы за невыясненный объём: проверка на реальной БД принимала
-    // variant=minimum у шаблона, где минимума не было вовсе
-    // (R6 в docs/15-backend-review.md). Спецификация берётся из снимка
-    // экземпляра, а не из текущего шаблона: правка шаблона задним числом не
-    // должна менять условия уже прожитого дня.
-    if (completionVariant === 'minimum' && occurrence.template_snapshot['minimum_spec'] == null) {
-      throw new InvalidCommandPayloadError(
-        'У задания нет принятой спецификации минимума: завершить минимумом нельзя',
+    // Факт записывается только там, где что-то действительно сделано. Отмена и
+    // запуск объёма не порождают.
+    const factVariant: ActivityVariant | null =
+      command === 'complete_quest'
+        ? (completionVariant as ActivityVariant)
+        : command === 'record_partial'
+          ? 'partial'
+          : null;
+
+    let activityId: string | null = null;
+    if (factVariant !== null) {
+      const specs = specsOf(occurrence.template_snapshot);
+      const fact = parseActivityFact(request.payload, specs.normal_spec);
+      assertFactMatchesVariant(fact, factVariant, specs.normal_spec, specs.minimum_spec);
+      const stored = await recordActivity(
+        context.client,
+        context.userId,
+        occurrenceId,
+        fact,
+        factVariant,
       );
+      activityId = stored.id;
     }
 
     const updated = await context.client.query<{ version: string }>(
@@ -280,6 +321,7 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         execution_status: target,
         version: row.version,
         ...(completionVariant === null ? {} : { variant: completionVariant }),
+        ...(activityId === null ? {} : { activity_id: activityId }),
       },
       changes: [
         {
@@ -295,6 +337,74 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         {
           kind: 'quest_status_changed',
           payload: { occurrence_id: occurrenceId, execution_status: target },
+        },
+      ],
+    };
+  };
+}
+
+/**
+ * Исправление уже записанного факта.
+ *
+ * Отдельная команда, а не повторное завершение: статус не меняется, меняется
+ * только то, что известно о сделанном. Новый способ доказательства — таймер,
+ * данные устройства, уточнение человека — уточняет действие, а не создаёт
+ * второе (docs/02, раздел 5).
+ */
+export function correctActivityHandler(request: CommandRequest) {
+  const occurrenceId = request.targetId;
+  if (occurrenceId === null) {
+    throw new InvalidCommandPayloadError('occurrence_id обязателен');
+  }
+
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const occurrence = await lockOccurrence(context, occurrenceId, request.expectedVersion);
+
+    const prior = await findAcceptedActivity(context.client, occurrenceId);
+    if (prior === undefined) {
+      // Исправлять нечего. Создать факт здесь значило бы завершить задание в
+      // обход автомата состояний.
+      throw new QuestNotFoundError('У задания нет записанного факта выполнения');
+    }
+
+    const specs = specsOf(occurrence.template_snapshot);
+    const fact = parseActivityFact(request.payload, specs.normal_spec);
+    // Вариант остаётся прежним: исправление уточняет объём, а не пересматривает
+    // решение о том, полное это выполнение или минимум.
+    assertFactMatchesVariant(fact, prior.variant, specs.normal_spec, specs.minimum_spec);
+
+    const stored = await recordActivity(
+      context.client,
+      context.userId,
+      occurrenceId,
+      fact,
+      prior.variant,
+    );
+
+    const updated = await context.client.query<{ version: string }>(
+      `UPDATE quest_occurrences SET version = version + 1, updated_at = now()
+        WHERE id = $1 RETURNING version`,
+      [occurrenceId],
+    );
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw new Error('Версия задания не обновлена');
+    }
+
+    return {
+      result: {
+        occurrence_id: occurrenceId,
+        activity_id: stored.id,
+        root_activity_id: stored.rootActivityId,
+        version: row.version,
+      },
+      changes: [
+        { entity: 'quest_occurrence', id: occurrenceId, operation: 'activity_corrected' },
+      ],
+      events: [
+        {
+          kind: 'activity_corrected',
+          payload: { occurrence_id: occurrenceId, activity_id: stored.id },
         },
       ],
     };

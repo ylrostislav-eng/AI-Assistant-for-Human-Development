@@ -6,6 +6,7 @@ import {
   parseCreateGoalPayload,
 } from '../goals/commands.ts';
 import {
+  correctActivityHandler,
   createQuestTemplateHandler,
   materializeOccurrenceHandler,
   parseCreateQuestTemplate,
@@ -90,6 +91,10 @@ const COMMANDS = new Map<string, CommandDefinition>([
       targetField: 'occurrence_id',
       build: (request) => questTransitionHandler('cancel_quest', request),
     },
+  ],
+  [
+    'correct_activity',
+    { targetField: 'occurrence_id', build: (request) => correctActivityHandler(request) },
   ],
 ]);
 

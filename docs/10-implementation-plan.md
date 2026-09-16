@@ -70,7 +70,7 @@ Railway указан как кандидат, а не уже выбранный 
 | ID | Что завершить | Зависимости | Критерий |
 |---|---|---|---|
 | P1-05 | Profile/onboarding/baseline, Goals/Milestones/Projects/Metrics/Inbox | T-01, T-03, contracts | Создать/изменить цель и реальные критерии, продолжить onboarding, baseline не даёт XP |
-| P1-06 | ActivityRecord/root, actual duration/amount, variants, partial, timer, undo foundation | T-00a, P1-03 | Выполнение хранит факты; minimum только при принятом spec; unknown duration не выдумывается; duplicates не создают второй root; UI и бот согласованы |
+| P1-06 ◑ | ActivityRecord/root, actual duration/amount, variants, partial (**сделано**, миграция 012); timer, undo foundation — нет | T-00a, P1-03 | Выполнение хранит факты; minimum только при принятом spec; unknown duration не выдумывается; duplicates не создают второй root; UI и бот согласованы |
 | P1-07 | Scheduler, availability/protected time, day/week/month, recurrence, day-close, reminders | T-00b/c/d, P1-05/06, T-02 | Дни не пересекаются, hard constraints, minimum/unscheduled, missed/excused, stale reminders отменены, no background JS dependency |
 | P1-08 | Закончить Today/Goals/Calendar/Character shell, Settings/Privacy и motion | T-03, P1-05…07 | Все manual действия, sync state, large RU text, screen readers; Character пока честно 0/недоступно без fake reward |
 | P1-09 | Export/delete, web/backend CI, deployment rehearsal | P1-02…08, T-04 | Export читается, delete/revoke не возрождаются replay, restore применяет deletion registry; ручной цикл 7 дней на устройстве с synthetic data |
