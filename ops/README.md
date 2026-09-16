@@ -17,7 +17,10 @@
 
 ```sql
 CREATE ROLE app_runtime LOGIN PASSWORD 'из secret manager' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
+CREATE ROLE app_worker  LOGIN PASSWORD 'из secret manager' NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE;
 ```
+
+Ролей две. API видит только строки своего пользователя; worker обрабатывает задания всех пользователей, и его расширенный доступ задан отдельными политиками на `jobs` и `outbox_events`, а не отключением RLS для этих таблиц: исключение видно в списке политик, а не спрятано в отсутствии защиты.
 
 Если роли нет, миграция останавливается с явным сообщением.
 
@@ -28,7 +31,8 @@ scripts/dev_db.sh start                  # поднимает кластер и 
 export DATABASE_URL=postgres://system@127.0.0.1:5433/system_test
 npm run test:integration
 npm run migrate
-npm run dev
+npm run dev                      # API
+npm run worker                   # фоновая обработка, роль app_worker
 scripts/dev_db.sh stop
 ```
 

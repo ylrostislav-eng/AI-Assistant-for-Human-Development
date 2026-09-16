@@ -65,6 +65,9 @@ export function createGoalHandler(payload: CreateGoalPayload) {
     return {
       result: { goal_id: row.id, version: row.version },
       changes: [{ entity: 'goal', id: row.id, operation: 'created', version: row.version }],
+      // В событие кладутся ссылки, а не содержание цели: полный текст в
+      // очереди заданий не нужен и не должен там оседать (docs/01, раздел 6).
+      events: [{ kind: 'goal_created', payload: { goal_id: row.id } }],
     };
   };
 }

@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 
+import { enqueueOutboxEvent } from '../../modules/sync/worker.ts';
 import { withTransaction, type Database, type TransactionClient } from '../db/pool.ts';
 
 /**
@@ -42,6 +43,12 @@ export interface CommandOutcome {
   readonly result: Record<string, unknown>;
   /** Изменения для синхронизации устройств. */
   readonly changes: readonly Record<string, unknown>[];
+  /**
+   * События для фоновой обработки. Пишутся той же транзакцией: отправка
+   * отдельным вызовом после фиксации теряется при падении процесса, а отправка
+   * до фиксации сообщает о том, чего может не случиться.
+   */
+  readonly events?: readonly { kind: string; payload: Record<string, unknown> }[];
 }
 
 export type CommandHandler = (context: CommandContext) => Promise<CommandOutcome>;
@@ -156,6 +163,10 @@ export async function executeCommand(
          VALUES ($1, $2, $3, $4::jsonb, $5)`,
         [request.userId, request.commandId, hash, JSON.stringify(outcome.result), seq],
       );
+
+      for (const event of outcome.events ?? []) {
+        await enqueueOutboxEvent(client, request.userId, event);
+      }
 
       return { result: outcome.result, committedSeq: seq, duplicate: false };
     });

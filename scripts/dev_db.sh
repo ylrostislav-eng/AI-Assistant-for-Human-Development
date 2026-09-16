@@ -23,6 +23,7 @@ PGUSER_NAME="${PGUSER_NAME:-system}"
 DEV_DB="${DEV_DB:-system_dev}"
 TEST_DB="${TEST_DB:-system_test}"
 RUNTIME_ROLE="${RUNTIME_ROLE:-app_runtime}"
+WORKER_ROLE="${WORKER_ROLE:-app_worker}"
 
 find_bindir() {
   # Версия сервера зависит от дистрибутива, поэтому берётся самая новая из
@@ -90,11 +91,17 @@ cmd_start() {
   # требует прав, которых у мигратора может не быть в managed PostgreSQL.
   # NOSUPERUSER и NOBYPASSRLS обязательны — под суперпользователем политики RLS
   # не действуют, и изоляция пользователей исчезает молча.
+  # Две роли без прав суперпользователя: API видит только строки своего
+  # пользователя, worker обрабатывает задания всех — его расширенный доступ
+  # задан отдельными политиками, а не отключением RLS.
   psql -h 127.0.0.1 -p "$PGPORT" -U "$PGUSER_NAME" -d "$TEST_DB" -q <<SQL
 DO \$\$
 BEGIN
   IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$RUNTIME_ROLE') THEN
     EXECUTE 'CREATE ROLE $RUNTIME_ROLE LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE';
+  END IF;
+  IF NOT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '$WORKER_ROLE') THEN
+    EXECUTE 'CREATE ROLE $WORKER_ROLE LOGIN NOSUPERUSER NOBYPASSRLS NOCREATEDB NOCREATEROLE';
   END IF;
 END
 \$\$;
@@ -126,6 +133,7 @@ cmd_url() {
   # BYPASSRLS, иначе политики изоляции не действуют.
   echo "DATABASE_URL=postgres://$PGUSER_NAME@127.0.0.1:$PGPORT/$TEST_DB"
   echo "RUNTIME_DATABASE_URL=postgres://$RUNTIME_ROLE@127.0.0.1:$PGPORT/$TEST_DB"
+  echo "WORKER_DATABASE_URL=postgres://$WORKER_ROLE@127.0.0.1:$PGPORT/$TEST_DB"
 }
 
 case "${1:-start}" in

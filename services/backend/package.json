@@ -11,7 +11,8 @@
     "test": "vitest run tests/unit tests/contracts",
     "test:integration": "vitest run tests/integration",
     "test:shuffle": "vitest run tests/integration --sequence.shuffle",
-    "migrate": "tsx src/shared/db/migrate.ts"
+    "migrate": "tsx src/shared/db/migrate.ts",
+    "worker": "tsx src/worker.ts"
   },
   "dependencies": {
     "ajv": "8.20.0",
