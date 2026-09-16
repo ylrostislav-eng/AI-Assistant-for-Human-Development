@@ -25,10 +25,19 @@ import { withTransaction, type Database, type TransactionClient } from '../db/po
  * бы через несуществующую пачку.
  */
 
+/** Версия схемы семантического хеша; см. миграцию 009. */
+export const SEMANTIC_HASH_VERSION = 2;
+
 export interface CommandRequest {
   readonly userId: string;
   readonly commandId: string;
   readonly kind: string;
+  readonly schemaVersion: number;
+  /** Изменяемый объект команды; null для создания. */
+  readonly targetId: string | null;
+  /** Ожидаемая версия объекта; null, если клиент её не утверждает. */
+  readonly expectedVersion: number | null;
+  readonly dependsOnCommandId: string | null;
   readonly payload: Record<string, unknown>;
 }
 
@@ -66,9 +75,9 @@ export class PayloadMismatchError extends Error {}
 class DuplicateCommandSignal extends Error {}
 
 /**
- * Канонический вид полезной нагрузки: порядок ключей не должен влиять на хеш.
- * Иначе тот же повтор с другим порядком полей выглядел бы новой командой и дал
- * бы второй эффект.
+ * Канонический вид значения: порядок ключей не должен влиять на хеш. Иначе тот
+ * же повтор с другим порядком полей выглядел бы новой командой и дал бы второй
+ * эффект.
  */
 function canonicalize(value: unknown): unknown {
   if (Array.isArray(value)) {
@@ -84,35 +93,74 @@ function canonicalize(value: unknown): unknown {
   return value;
 }
 
-export function payloadHash(payload: Record<string, unknown>): string {
-  return createHash('sha256').update(JSON.stringify(canonicalize(payload)), 'utf8').digest('hex');
+/**
+ * Семантический хеш команды.
+ *
+ * В него входит всё, что определяет смысл операции: схема, вид, цель,
+ * ожидаемая версия, зависимость и нагрузка. Хеш только по нагрузке (схема 1)
+ * считал повтором `start_quest` и `complete_quest` с одинаковой нагрузкой —
+ * клиент получал квитанцию чужой операции (R2 в docs/15-backend-review.md).
+ *
+ * Транспортные поля — идентификатор устройства и время клиента — намеренно не
+ * входят: при повторе после обрыва сети они меняются законно.
+ */
+export function semanticHash(request: CommandRequest): string {
+  const semantic = {
+    schema_version: request.schemaVersion,
+    kind: request.kind,
+    target_id: request.targetId,
+    expected_version: request.expectedVersion,
+    depends_on_command_id: request.dependsOnCommandId,
+    payload: request.payload,
+  };
+  return createHash('sha256').update(JSON.stringify(canonicalize(semantic)), 'utf8').digest('hex');
 }
 
 async function setUser(client: TransactionClient, userId: string): Promise<void> {
   await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
 }
 
+interface StoredReceipt {
+  readonly payload_hash: string;
+  readonly kind: string | null;
+  readonly hash_version: number;
+  readonly result: Record<string, unknown> | null;
+  readonly committed_seq: string;
+}
+
+/**
+ * Совпадает ли сохранённая квитанция с предъявленной командой.
+ *
+ * Для квитанций прежней схемы вид команды неизвестен, и доказать тождество
+ * невозможно. Принимать такой повтор на веру означало бы вернуть результат
+ * операции, которой, возможно, не было; поэтому он считается конфликтом.
+ */
+function receiptMatches(receipt: StoredReceipt, request: CommandRequest): boolean {
+  if (receipt.hash_version !== SEMANTIC_HASH_VERSION) {
+    return false;
+  }
+  return receipt.kind === request.kind && receipt.payload_hash === semanticHash(request);
+}
+
 async function readReceipt(db: Database, request: CommandRequest): Promise<CommandReceipt | null> {
   return withTransaction(db, async (client) => {
     await setUser(client, request.userId);
-    const stored = await client.query<{
-      payload_hash: string;
-      result: Record<string, unknown> | null;
-      committed_seq: string;
-    }>('SELECT payload_hash, result, committed_seq FROM command_receipts WHERE command_id = $1', [
-      request.commandId,
-    ]);
+    const stored = await client.query<StoredReceipt>(
+      `SELECT payload_hash, kind, hash_version, result, committed_seq
+         FROM command_receipts WHERE command_id = $1`,
+      [request.commandId],
+    );
 
     const receipt = stored.rows[0];
     if (receipt === undefined) {
       return null;
     }
-    if (receipt.payload_hash !== payloadHash(request.payload)) {
-      // Тот же идентификатор с другим содержимым — ошибка клиента, а не
-      // повтор. Вернуть прежнюю квитанцию значило бы подтвердить выполнение
-      // того, что сервер никогда не выполнял.
+    if (!receiptMatches(receipt, request)) {
+      // Тот же идентификатор с другим смыслом — ошибка клиента, а не повтор.
+      // Вернуть прежнюю квитанцию значило бы подтвердить выполнение того, что
+      // сервер никогда не выполнял.
       throw new PayloadMismatchError(
-        `Команда ${request.commandId} уже выполнена с другой полезной нагрузкой`,
+        `Команда ${request.commandId} уже выполнена с другим содержанием`,
       );
     }
     return { result: receipt.result ?? {}, committedSeq: receipt.committed_seq, duplicate: true };
@@ -124,7 +172,7 @@ export async function executeCommand(
   request: CommandRequest,
   handler: CommandHandler,
 ): Promise<CommandReceipt> {
-  const hash = payloadHash(request.payload);
+  const hash = semanticHash(request);
 
   try {
     return await withTransaction(db, async (client) => {
@@ -143,8 +191,8 @@ export async function executeCommand(
       }
 
       // Шаг 2: повтор?
-      const existing = await client.query<{ payload_hash: string }>(
-        'SELECT payload_hash FROM command_receipts WHERE command_id = $1',
+      const existing = await client.query<{ command_id: string }>(
+        'SELECT command_id FROM command_receipts WHERE command_id = $1',
         [request.commandId],
       );
       if (existing.rows.length > 0) {
@@ -159,9 +207,18 @@ export async function executeCommand(
         [request.userId, seq, JSON.stringify(outcome.changes)],
       );
       await client.query(
-        `INSERT INTO command_receipts (user_id, command_id, payload_hash, result, committed_seq)
-         VALUES ($1, $2, $3, $4::jsonb, $5)`,
-        [request.userId, request.commandId, hash, JSON.stringify(outcome.result), seq],
+        `INSERT INTO command_receipts
+           (user_id, command_id, payload_hash, kind, hash_version, result, committed_seq)
+         VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)`,
+        [
+          request.userId,
+          request.commandId,
+          hash,
+          request.kind,
+          SEMANTIC_HASH_VERSION,
+          JSON.stringify(outcome.result),
+          seq,
+        ],
       );
 
       for (const event of outcome.events ?? []) {

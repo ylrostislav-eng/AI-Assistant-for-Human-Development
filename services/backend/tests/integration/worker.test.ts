@@ -16,6 +16,7 @@ import {
 import { executeCommand } from '../../src/shared/commands/bus.ts';
 import { DEFAULT_MIGRATIONS_DIR, runMigrations } from '../../src/shared/db/migrate.ts';
 import { createPool, type Database } from '../../src/shared/db/pool.ts';
+import { commandRequest } from '../helpers/command-request.ts';
 import { resetSchema } from '../helpers/reset-schema.ts';
 
 /**
@@ -76,7 +77,7 @@ async function createGoalViaCommand(userId: string, title: string): Promise<void
   const payload = { title, start_date: '2026-09-01' };
   await executeCommand(
     runtimeDb,
-    { userId, commandId: randomUUID(), kind: 'create_goal', payload },
+    commandRequest({ userId, kind: 'create_goal', payload }),
     createGoalHandler(parseCreateGoalPayload(payload)),
   );
 }
@@ -123,7 +124,7 @@ describe('транзакционный outbox', () => {
     await expect(
       executeCommand(
         runtimeDb,
-        { userId: USER_B, commandId: randomUUID(), kind: 'create_goal', payload: {} },
+        commandRequest({ userId: USER_B, kind: 'create_goal', payload: {} }),
         async () => {
           throw new Error('сбой после записи события');
         },

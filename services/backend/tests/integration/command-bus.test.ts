@@ -6,13 +6,14 @@ import { loadConfig } from '../../src/config.ts';
 import { createGoalHandler, parseCreateGoalPayload } from '../../src/modules/goals/commands.ts';
 import {
   executeCommand,
-  payloadHash,
   PayloadMismatchError,
+  semanticHash,
   type CommandOutcome,
 } from '../../src/shared/commands/bus.ts';
 import { DEFAULT_MIGRATIONS_DIR, runMigrations } from '../../src/shared/db/migrate.ts';
 import { createPool, type Database } from '../../src/shared/db/pool.ts';
 import { withTenantTransaction } from '../../src/shared/db/tenant.ts';
+import { commandRequest } from '../helpers/command-request.ts';
 import { resetSchema } from '../helpers/reset-schema.ts';
 
 /**
@@ -61,7 +62,7 @@ afterAll(async () => {
 function goalCommand(userId: string, title: string, commandId = randomUUID()) {
   const payload = { title, start_date: '2026-09-01' };
   return {
-    request: { userId, commandId, kind: 'create_goal', payload },
+    request: commandRequest({ userId, commandId, kind: 'create_goal', payload }),
     handler: createGoalHandler(parseCreateGoalPayload(payload)),
   };
 }
@@ -117,7 +118,57 @@ describe('идемпотентность', () => {
 
   it('порядок ключей в нагрузке не влияет на распознавание повтора', async () => {
     // Иначе тот же повтор с другим порядком полей дал бы второй эффект.
-    expect(payloadHash({ a: 1, b: { c: 2, d: 3 } })).toBe(payloadHash({ b: { d: 3, c: 2 }, a: 1 }));
+    const commandId = randomUUID();
+    const direct = commandRequest({
+      userId: USER_A,
+      commandId,
+      kind: 'create_goal',
+      payload: { a: 1, b: { c: 2, d: 3 } },
+    });
+    const reordered = commandRequest({
+      userId: USER_A,
+      commandId,
+      kind: 'create_goal',
+      payload: { b: { d: 3, c: 2 }, a: 1 },
+    });
+
+    expect(semanticHash(direct)).toBe(semanticHash(reordered));
+  });
+
+  it('тот же идентификатор с другим видом команды не считается повтором', async () => {
+    // Хеш только по нагрузке выдал бы за повтор две разные операции, и клиент
+    // получил бы квитанцию чужой (R2 в docs/15-backend-review.md).
+    const commandId = randomUUID();
+    const payload = { title: 'Одна нагрузка' };
+    const started = commandRequest({ userId: USER_A, commandId, kind: 'start_quest', payload });
+    const completed = commandRequest({
+      userId: USER_A,
+      commandId,
+      kind: 'complete_quest',
+      payload,
+    });
+
+    expect(semanticHash(started)).not.toBe(semanticHash(completed));
+  });
+
+  it('квитанция прежней схемы не принимается как повтор', async () => {
+    // У квитанций hash_version = 1 вид команды неизвестен, доказать тождество
+    // нечем. Принять такой повтор значило бы подтвердить выполнение операции,
+    // которой, возможно, не было.
+    const commandId = randomUUID();
+    await ownerDb.query(
+      `INSERT INTO command_receipts
+         (user_id, command_id, payload_hash, hash_version, result, committed_seq)
+       VALUES ($1, $2, $3, 1, '{}'::jsonb, 1)`,
+      [USER_A, commandId, 'хеш-прежней-схемы'],
+    );
+
+    const { request, handler } = goalCommand(USER_A, 'После старой квитанции', commandId);
+
+    await expect(executeCommand(runtimeDb, request, handler)).rejects.toBeInstanceOf(
+      PayloadMismatchError,
+    );
+    expect(await countGoals(USER_A, 'После старой квитанции')).toBe(0);
   });
 
   it('тот же идентификатор команды у другого пользователя выполняется', async () => {
@@ -194,7 +245,12 @@ describe('сбой обработчика', () => {
     await expect(
       executeCommand(
         runtimeDb,
-        { userId: USER_A, commandId, kind: 'create_goal', payload: { title: 'Упадёт' } },
+        commandRequest({
+          userId: USER_A,
+          commandId,
+          kind: 'create_goal',
+          payload: { title: 'Упадёт' },
+        }),
         async (): Promise<CommandOutcome> => {
           throw new Error('сбой внутри обработчика');
         },

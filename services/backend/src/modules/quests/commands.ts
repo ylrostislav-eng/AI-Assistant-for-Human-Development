@@ -1,4 +1,4 @@
-import type { CommandContext, CommandOutcome } from '../../shared/commands/bus.ts';
+import type { CommandContext, CommandOutcome, CommandRequest } from '../../shared/commands/bus.ts';
 import { InvalidCommandPayloadError } from '../goals/commands.ts';
 import {
   isCompletionVariant,
@@ -161,26 +161,6 @@ export function materializeOccurrenceHandler(payload: MaterializeOccurrencePaylo
   };
 }
 
-export interface QuestTransitionPayload {
-  readonly occurrence_id: string;
-  readonly expected_version?: number;
-  readonly variant?: CompletionVariant;
-}
-
-export function parseQuestTransition(payload: Record<string, unknown>): QuestTransitionPayload {
-  const expectedVersion = payload['expected_version'];
-  const variant = payload['variant'];
-
-  if (variant !== undefined && !isCompletionVariant(variant)) {
-    throw new InvalidCommandPayloadError('variant должен быть normal или minimum');
-  }
-
-  return {
-    occurrence_id: requireString(payload, 'occurrence_id'),
-    ...(typeof expectedVersion === 'number' ? { expected_version: expectedVersion } : {}),
-    ...(variant === undefined ? {} : { variant }),
-  };
-}
 
 /**
  * Переход выполнения.
@@ -191,7 +171,19 @@ export function parseQuestTransition(payload: Record<string, unknown>): QuestTra
  * Версия проверяется, если клиент её прислал: он мог принимать решение по
  * устаревшему экрану, и тогда переход относится к состоянию, которого уже нет.
  */
-export function questTransitionHandler(command: QuestCommand, payload: QuestTransitionPayload) {
+export function questTransitionHandler(command: QuestCommand, request: CommandRequest) {
+  const occurrenceId = request.targetId;
+  if (occurrenceId === null) {
+    // Цель берётся из конверта или из нагрузки; её отсутствие означает, что
+    // клиент не сказал, что именно менять.
+    throw new InvalidCommandPayloadError('occurrence_id обязателен');
+  }
+
+  const variant = request.payload['variant'];
+  if (variant !== undefined && !isCompletionVariant(variant)) {
+    throw new InvalidCommandPayloadError('variant должен быть normal или minimum');
+  }
+
   return async (context: CommandContext): Promise<CommandOutcome> => {
     const current = await context.client.query<{
       id: string;
@@ -199,7 +191,7 @@ export function questTransitionHandler(command: QuestCommand, payload: QuestTran
       version: string;
     }>(
       'SELECT id, execution_status, version FROM quest_occurrences WHERE id = $1 FOR UPDATE',
-      [payload.occurrence_id],
+      [occurrenceId],
     );
 
     const occurrence = current.rows[0];
@@ -207,16 +199,17 @@ export function questTransitionHandler(command: QuestCommand, payload: QuestTran
       throw new QuestNotFoundError('Экземпляр задания не найден');
     }
     if (
-      payload.expected_version !== undefined &&
-      Number(occurrence.version) !== payload.expected_version
+      request.expectedVersion !== null &&
+      Number(occurrence.version) !== request.expectedVersion
     ) {
       throw new VersionConflictError(
-        `Экземпляр изменился: ожидалась версия ${payload.expected_version}, текущая ${occurrence.version}`,
+        `Экземпляр изменился: ожидалась версия ${request.expectedVersion}, текущая ${occurrence.version}`,
       );
     }
 
     const target = nextStatus(occurrence.execution_status, command);
-    const variant = command === 'complete_quest' ? (payload.variant ?? 'normal') : null;
+    const completionVariant =
+      command === 'complete_quest' ? ((variant as CompletionVariant | undefined) ?? 'normal') : null;
 
     const updated = await context.client.query<{ version: string }>(
       `UPDATE quest_occurrences
@@ -226,7 +219,7 @@ export function questTransitionHandler(command: QuestCommand, payload: QuestTran
               updated_at = now()
         WHERE id = $1
         RETURNING version`,
-      [payload.occurrence_id, target, variant],
+      [occurrenceId, target, completionVariant],
     );
 
     const row = updated.rows[0];
@@ -236,15 +229,15 @@ export function questTransitionHandler(command: QuestCommand, payload: QuestTran
 
     return {
       result: {
-        occurrence_id: payload.occurrence_id,
+        occurrence_id: occurrenceId,
         execution_status: target,
         version: row.version,
-        ...(variant === null ? {} : { variant }),
+        ...(completionVariant === null ? {} : { variant: completionVariant }),
       },
       changes: [
         {
           entity: 'quest_occurrence',
-          id: payload.occurrence_id,
+          id: occurrenceId,
           operation: 'status_changed',
           execution_status: target,
         },
@@ -254,7 +247,7 @@ export function questTransitionHandler(command: QuestCommand, payload: QuestTran
       events: [
         {
           kind: 'quest_status_changed',
-          payload: { occurrence_id: payload.occurrence_id, execution_status: target },
+          payload: { occurrence_id: occurrenceId, execution_status: target },
         },
       ],
     };
