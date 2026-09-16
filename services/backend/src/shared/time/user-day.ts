@@ -47,8 +47,12 @@ function formatter(zone: string): Intl.DateTimeFormat {
   return created;
 }
 
-/** Локальное время в указанном поясе для данного мгновения. */
-export function wallTimeAt(instant: Date, zone: string): WallTime {
+/** Локальное время с секундами: секунды нужны для точного смещения. */
+interface ZonedParts extends WallTime {
+  readonly second: number;
+}
+
+function zonedPartsAt(instant: Date, zone: string): ZonedParts {
   const parts = formatter(zone).formatToParts(instant);
   const value = (type: Intl.DateTimeFormatPartTypes): number => {
     const part = parts.find((candidate) => candidate.type === type);
@@ -65,16 +69,46 @@ export function wallTimeAt(instant: Date, zone: string): WallTime {
     day: value('day'),
     hour: value('hour'),
     minute: value('minute'),
+    second: value('second'),
   };
+}
+
+/** Локальное время в указанном поясе для данного мгновения. */
+export function wallTimeAt(instant: Date, zone: string): WallTime {
+  const { year, month, day, hour, minute } = zonedPartsAt(instant, zone);
+  return { year, month, day, hour, minute };
 }
 
 function wallAsUtcMillis(wall: WallTime): number {
   return Date.UTC(wall.year, wall.month - 1, wall.day, wall.hour, wall.minute);
 }
 
-/** Смещение пояса в миллисекундах для конкретного мгновения. */
+/**
+ * Смещение пояса в миллисекундах для конкретного мгновения.
+ *
+ * Секунды обязательны. Раньше смещение считалось по локальному времени без
+ * секунд, и в ответе оставалась ошибка в −(секунды пробы). Для круглых минут
+ * она была нулевой, поэтому проверка разрыва в начале часа проходила, а
+ * двоичный поиск границы, который пробует произвольные миллисекунды, сравнивал
+ * не смещения, а смещения со случайной поправкой, и уходил не в ту сторону: из
+ * 12 проб шага в пять минут ошибались 8 (R4 в docs/15-backend-review.md).
+ *
+ * Мгновение округляется вниз до секунды: локальное время известно с точностью
+ * до секунды, и остаток миллисекунд иначе снова превратился бы в поправку.
+ * Смещения поясов кратны минуте, поэтому точности до секунды достаточно.
+ */
 function offsetAt(instant: Date, zone: string): number {
-  return wallAsUtcMillis(wallTimeAt(instant, zone)) - instant.getTime();
+  const parts = zonedPartsAt(instant, zone);
+  const localMillis = Date.UTC(
+    parts.year,
+    parts.month - 1,
+    parts.day,
+    parts.hour,
+    parts.minute,
+    parts.second,
+  );
+  const wholeSeconds = Math.floor(instant.getTime() / 1000) * 1000;
+  return localMillis - wholeSeconds;
 }
 
 function sameWall(left: WallTime, right: WallTime): boolean {
