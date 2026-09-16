@@ -2,7 +2,7 @@ import { createHash } from 'node:crypto';
 
 import type { FastifyInstance } from 'fastify';
 
-import type { AppConfig } from '../../config.ts';
+import type { AppConfig, TelegramConfig } from '../../config.ts';
 import { withTransaction, type Database } from '../../shared/db/pool.ts';
 import { logError } from '../../shared/logging/logger.ts';
 import {
@@ -15,6 +15,7 @@ import {
   UnknownTokenError,
   type IssuedSession,
 } from './sessions.ts';
+import { InitDataError, verifyInitData } from './telegram.ts';
 
 /**
  * Маршруты входа. Проверка Apple identity token не реализована — она требует
@@ -33,6 +34,43 @@ interface RefreshBody {
 interface LogoutBody {
   readonly family_id?: string;
 }
+
+interface TelegramLoginBody {
+  readonly init_data?: string;
+  readonly installation_id?: string;
+}
+
+/**
+ * Тело запроса входа закрыто: лишнее поле означает, что клиент рассчитывает на
+ * поведение, которого нет.
+ */
+const telegramLoginSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['init_data'],
+  properties: {
+    init_data: { type: 'string', minLength: 1, maxLength: 8192 },
+    installation_id: { type: 'string', format: 'uuid' },
+  },
+} as const;
+
+/**
+ * Разбор отказов проверки подписи.
+ *
+ * 400 — клиент собрал запрос неправильно и может это исправить. 401 — личность
+ * не подтверждена: подделка, просроченное доказательство, чужой человек. Почему
+ * именно не подтверждена, знает клиент (он собирал запрос), а подбирающему
+ * различие не даёт ничего нового: все эти случаи для него одинаково «не
+ * прошло».
+ */
+const MALFORMED_CODES = new Set([
+  'initdata_too_large',
+  'initdata_malformed',
+  'initdata_duplicate_key',
+  'initdata_hash_missing',
+  'initdata_no_user',
+  'initdata_user_id_unsafe',
+]);
 
 /**
  * Идентификатор синтетического пользователя выводится из subject детерминированно.
@@ -57,6 +95,9 @@ function devUserId(subject: string): string {
     hex.slice(20, 32),
   ].join('-');
 }
+
+/** Повторно предъявленное доказательство входа. */
+class ProofReusedError extends Error {}
 
 function sessionResponse(session: IssuedSession): Record<string, unknown> {
   return {
@@ -97,6 +138,89 @@ export function registerIdentityRoutes(
     const session = await issueSession(database, userId, null);
     return reply.code(201).send({ user_id: userId, ...sessionResponse(session) });
   });
+
+  app.post(
+    '/auth/telegram',
+    { schema: { body: telegramLoginSchema } },
+    async (request, reply) => {
+      const telegram: TelegramConfig = config.telegram;
+      if (telegram.botToken === null) {
+        // 404, а не 503: ненастроенный маршрут не должен подтверждать своё
+        // существование, как и отключённый вход разработчика.
+        return reply.code(404).send({ error: 'not_found' });
+      }
+
+      const body = request.body as TelegramLoginBody;
+      const initData = body.init_data ?? '';
+
+      let verified;
+      try {
+        verified = verifyInitData(initData, {
+          botToken: telegram.botToken,
+          allowedUserIds: telegram.allowedUserIds,
+          maxAgeSeconds: telegram.maxAgeSeconds,
+          futureSkewSeconds: telegram.futureSkewSeconds,
+        });
+      } catch (error) {
+        if (error instanceof InitDataError) {
+          // Сама строка не логируется ни при каком исходе: это действующее
+          // предъявительское доказательство (docs/14, раздел 3).
+          const status = MALFORMED_CODES.has(error.code) ? 400 : 401;
+          return reply.code(status).send({ error: error.code });
+        }
+        throw error;
+      }
+
+      let userId: string;
+      try {
+        userId = await withTransaction(database, async (client) => {
+          // Обмен доказательства на сессию: отпечаток расходуется первым, и
+          // повтор не дойдёт до создания второй семьи сессий.
+          const consumed = await client.query(
+            `INSERT INTO telegram_login_proofs (digest, expires_at)
+             VALUES ($1, $2) ON CONFLICT (digest) DO NOTHING`,
+            [
+              verified.proofDigest,
+              new Date(verified.authDate.getTime() + telegram.maxAgeSeconds * 1000),
+            ],
+          );
+          if (consumed.rowCount !== 1) {
+            throw new ProofReusedError('Это доказательство уже обменено на сессию');
+          }
+
+          // Узкая функция с правами владельца: до входа политика изоляции не
+          // показывает строку пользователя, потому что идентификатор ещё не
+          // установлен. Общего обхода политики при этом не появляется.
+          const resolved = await client.query<{ identity_resolve_telegram: string }>(
+            'SELECT identity_resolve_telegram($1)',
+            [verified.telegramUserId],
+          );
+          const found = resolved.rows[0]?.identity_resolve_telegram;
+          if (found === undefined) {
+            throw new Error('Личность Telegram не сопоставлена пользователю');
+          }
+          return found;
+        });
+      } catch (error) {
+        if (error instanceof ProofReusedError) {
+          return reply.code(401).send({ error: 'initdata_already_used' });
+        }
+        if ((error as { code?: string }).code === '28000') {
+          return reply.code(403).send({ error: 'account_unavailable' });
+        }
+        logError('telegram_login_failed', error, {
+          request_id: request.id,
+          route: 'POST /auth/telegram',
+        });
+        return reply.code(503).send({ error: 'service_unavailable', request_id: request.id });
+      }
+
+      // Telegram остаётся внешним поставщиком личности: доказательство не
+      // пересылается с каждым запросом, дальше работает собственная сессия.
+      const session = await issueSession(database, userId, body.installation_id ?? null);
+      return reply.code(201).send({ user_id: userId, ...sessionResponse(session) });
+    },
+  );
 
   app.post('/auth/refresh', async (request, reply) => {
     const body = (request.body ?? {}) as RefreshBody;

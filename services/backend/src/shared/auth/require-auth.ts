@@ -24,6 +24,7 @@ export const PUBLIC_PATHS: readonly string[] = [
   '/health/ready',
   // Вход по определению выполняется без access-токена.
   '/auth/dev-login',
+  '/auth/telegram',
   // Обновление предъявляет refresh-токен в теле запроса, а не access.
   '/auth/refresh',
 ];

@@ -16,6 +16,22 @@ export interface ServerConfig {
   readonly port: number;
 }
 
+/**
+ * Вход через Telegram. Без токена бота маршрут не существует: включать проверку
+ * подписи «наполовину» нельзя, а отсутствующий токен — это не настройка по
+ * умолчанию, а незавершённая настройка.
+ */
+export interface TelegramConfig {
+  readonly botToken: string | null;
+  /**
+   * Личный пилот принимает только перечисленных (docs/14, раздел 2). Пустой
+   * список означает «никого»: доступ закрыт по умолчанию.
+   */
+  readonly allowedUserIds: readonly string[];
+  readonly maxAgeSeconds: number;
+  readonly futureSkewSeconds: number;
+}
+
 export interface AppConfig {
   readonly environment: 'development' | 'test' | 'production';
   readonly server: ServerConfig;
@@ -26,6 +42,7 @@ export interface AppConfig {
    * постоянный обход аутентификации, о котором все забывают.
    */
   readonly devAuthEnabled: boolean;
+  readonly telegram: TelegramConfig;
 }
 
 export class ConfigError extends Error {}
@@ -68,11 +85,45 @@ function readDevAuth(env: NodeJS.ProcessEnv, environment: AppConfig['environment
   return enabled;
 }
 
+/**
+ * Список допущенных идентификаторов Telegram. Нечисловое значение — ошибка
+ * запуска: пропустить его значит тихо сузить список и получить необъяснимый
+ * отказ во входе.
+ */
+function readAllowedUserIds(env: NodeJS.ProcessEnv): readonly string[] {
+  const raw = env['TELEGRAM_ALLOWED_USER_IDS'];
+  if (raw === undefined || raw.trim() === '') {
+    return [];
+  }
+  return raw.split(',').map((entry) => {
+    const value = entry.trim();
+    if (!/^[0-9]{1,20}$/.test(value)) {
+      throw new ConfigError(
+        `TELEGRAM_ALLOWED_USER_IDS содержит нечисловой идентификатор: ${value}`,
+      );
+    }
+    return value;
+  });
+}
+
+function readTelegram(env: NodeJS.ProcessEnv): TelegramConfig {
+  const token = env['TELEGRAM_BOT_TOKEN'];
+  return {
+    botToken: token === undefined || token.trim() === '' ? null : token.trim(),
+    allowedUserIds: readAllowedUserIds(env),
+    // Срок жизни доказательства: подпись не делает украденную строку
+    // безопасной, и окно кражи сужает только он (docs/14, раздел 3).
+    maxAgeSeconds: readInteger('TELEGRAM_AUTH_MAX_AGE_SECONDS', env, 300),
+    futureSkewSeconds: readInteger('TELEGRAM_AUTH_FUTURE_SKEW_SECONDS', env, 30),
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const environment = readEnvironment(env);
   return {
     environment,
     devAuthEnabled: readDevAuth(env, environment),
+    telegram: readTelegram(env),
     server: {
       host: env['HOST'] ?? '127.0.0.1',
       port: readInteger('PORT', env, 3000),

@@ -85,6 +85,96 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /auth/telegram:
+    post:
+      summary: Вход через Telegram Mini App
+      description: |
+        Клиент передаёт исходную строку `initData`, полученную от Telegram.
+        Токен бота клиенту не передаётся и в теле запроса не принимается.
+
+        Подпись — единственное доказательство личности: `initDataUnsafe`,
+        username и отображаемое имя её не подтверждают. Проверяется HMAC по
+        официальной спецификации, возраст подписи (не старше пяти минут),
+        расхождение часов вперёд (не больше тридцати секунд) и принадлежность
+        подписанного пользователя к списку допущенных. Пустой список означает
+        «никого».
+
+        Строка — краткоживящее предъявительское доказательство: подпись не
+        делает украденную строку безопасной. Одно доказательство обменивается
+        ровно на одну семью сессий; повторное предъявление отклоняется с
+        `initdata_already_used`. Если ответ потерян, клиент открывает Mini App
+        заново и получает свежее доказательство — ошибка не подменяется
+        успехом.
+
+        Без настроенного токена бота маршрут отвечает 404: ненастроенный вход не
+        подтверждает своё существование.
+      operationId: loginWithTelegram
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [init_data]
+              properties:
+                init_data:
+                  type: string
+                  maxLength: 8192
+                installation_id:
+                  type: string
+                  format: uuid
+      responses:
+        '201':
+          description: Выдана сессия
+          content:
+            application/json:
+              schema:
+                allOf:
+                  - $ref: '#/components/schemas/IssuedSession'
+                  - type: object
+                    properties:
+                      user_id:
+                        type: string
+                        format: uuid
+        '400':
+          description: |
+            Запрос собран неправильно: строка длиннее допустимого, не
+            разбирается, содержит дубли ключей, не содержит подписи или
+            подписанного пользователя.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: |
+            Личность не подтверждена: подпись не совпала (`initdata_forged`),
+            доказательство просрочено (`initdata_expired`) или из будущего
+            (`initdata_from_future`), уже обменено (`initdata_already_used`),
+            человек не допущен к пилоту (`user_not_allowed`).
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '403':
+          description: Аккаунт удалён или приостановлен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Вход через Telegram не настроен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '503':
+          description: Сбой инфраструктуры; вход можно повторить новым запуском
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /auth/refresh:
     post:
       summary: Обновление сессии

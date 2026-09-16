@@ -36,6 +36,7 @@ async function loadOpenApi(): Promise<OpenApiDocument> {
 const config: AppConfig = {
   environment: 'test',
   devAuthEnabled: false,
+  telegram: { botToken: null, allowedUserIds: [], maxAgeSeconds: 300, futureSkewSeconds: 30 },
   server: { host: '127.0.0.1', port: 0 },
   database: { connectionString: 'postgres://unused', maxConnections: 1, connectionTimeoutMillis: 1000 },
 };

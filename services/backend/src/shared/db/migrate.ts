@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { loadConfig } from '../../config.ts';
+import { loadEnvFile } from '../config/load-env.ts';
 import { createPool, withTransaction, type Database } from './pool.ts';
 
 /**
@@ -120,6 +121,7 @@ async function main(): Promise<void> {
 
 // Запуск как команды: `npm run migrate`. При импорте из тестов main не вызывается.
 if (process.argv[1] !== undefined && import.meta.url === `file://${process.argv[1]}`) {
+  loadEnvFile();
   main().catch((error: unknown) => {
     console.error('Миграции не выполнены:', error);
     process.exit(1);

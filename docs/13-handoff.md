@@ -14,7 +14,7 @@
 |---|---|---|
 | Toolchain | npm workspaces, pins/lockfile, TS/Fastify/pg, test tooling | Web scaffold/lock additions после compatibility smoke |
 | DB | Миграции 001–008, identity/profile/goals/quests/calendar/sync/jobs, RLS/roles | Activity/ledger и новые Telegram tables по задачам |
-| Identity | Dev synthetic login, opaque access/refresh, rotation/logout, закрытый доступ | Signed Telegram login + external identities + installation binding |
+| Identity | Dev synthetic login, вход через Telegram по подписанной initData с allowlist и защитой от повтора (**T-01 выполнен**), opaque access/refresh, rotation/logout, закрытый доступ | Привязка installation (T-05), живой запуск Mini App на устройстве |
 | Commands | Bus, receipts, user counters, batches, own-key registry, семантический hash, каноническая цель/версия, закрытые схемы нагрузки (**T-00a выполнен**) | Расширения domain; политика фоновых исполнителей |
 | Worker | Outbox/dispatch/jobs, аренда с владельцем, CAS на завершении/неудаче/продлении, ограниченный повторный захват (**T-00b выполнен**) | Реальные domain/Telegram handlers, delivery ledger |
 | Quests | Create template/materialize/start/complete/partial/cancel states, факт выполнения с объёмом/длительностью/отрезком и исправление факта (**остаток R6 закрыт**) | Timer, undo, evidence, delta частичного к полному, связь с user_day |
@@ -23,7 +23,7 @@
 | AI/RPG | Документация, JSON rules, arithmetic sanity | Production AI/Progression/ledger/Recovery/reviews отсутствуют |
 | Operations | Локальный DB script, непроверенные Docker/Compose sketches | HTTPS hosting, bot setup, secrets, backup/restore, реальный пилот |
 
-Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`. [OpenAPI](../packages/contracts/openapi.yaml) отражает их; будущие маршруты в docs/06 пока не существуют. `apps/miniapp` пока не создан.
+Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `POST /auth/telegram`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`. [OpenAPI](../packages/contracts/openapi.yaml) отражает их; будущие маршруты в docs/06 пока не существуют. `apps/miniapp` пока не создан.
 
 ## 3. Найденные ограничения кода
 
@@ -156,7 +156,39 @@ ends_at))`: прикладное правило может обойти буду
 досочиняются: синтетическая запись задним числом навсегда смешалась бы с
 измеренной.
 
-Не сделано: таймер, отмена выполнения (undo) с компенсирующими записями,
+### 3.7 Вход через Telegram (T-01)
+
+Миграция 013 добавляет узкую функцию сопоставления личности и таблицу
+отпечатков использованных доказательств.
+
+Подпись проверяется по официальной спецификации: secret = HMAC-SHA256 с ключом
+`WebAppData` и сообщением токен бота, затем HMAC data-check-string этим secret,
+сравнение constant-time. `signature` из подписываемой строки исключается —
+это отдельный протокол Ed25519 для третьих сторон, и смешивать их нельзя.
+Возраст подписи не больше пяти минут, расхождение часов вперёд не больше
+тридцати секунд, дубли ключей отклоняются, идентификатор вне безопасного
+диапазона чисел отклоняется вместо потери точности.
+
+Личный пилот принимает только перечисленных в `TELEGRAM_ALLOWED_USER_IDS`;
+пустой список означает «никого». Сопоставление идёт через функцию с правами
+владельца: до входа политика изоляции не показывает строку пользователя,
+потому что идентификатор ещё не установлен. Функция принимает только subject и
+возвращает один UUID — общего обхода политики не появляется. Удалённый или
+приостановленный аккаунт вход не получает.
+
+Одно доказательство обменивается ровно на одну семью сессий: отпечаток
+канонических полей расходуется первым, перестановка ключей его не меняет. Цена
+политики известна и принята (docs/14, раздел 3): потерянный ответ требует
+нового запуска Mini App, ошибка не подменяется успехом.
+
+Заодно закрыт молчаливый разрыв: `ops/env.example` предлагал скопировать файл в
+`.env`, но читать его было некому. Теперь точки входа вызывают
+`process.loadEnvFile`, причём переменные окружения имеют приоритет над файлом.
+
+**Проверено только на синтетическом токене.** Связь с настоящим Telegram, живой
+запуск Mini App и поведение клиента этим набором не проверялись.
+
+Не сделано: привязка installation (T-05), таймер, отмена выполнения (undo) с компенсирующими записями,
 evidence, delta частичного к полному при награде, связь факта с
 пользовательским днём (`credited_day_id`). Награды нет вовсе — это P3-02.
 

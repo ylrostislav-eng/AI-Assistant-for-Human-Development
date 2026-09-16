@@ -23,6 +23,7 @@ export const API_ROUTES = [
   { method: 'get', path: '/health' },
   { method: 'get', path: '/health/ready' },
   { method: 'post', path: '/auth/dev-login' },
+  { method: 'post', path: '/auth/telegram' },
   { method: 'post', path: '/auth/refresh' },
   { method: 'post', path: '/auth/logout' },
   { method: 'get', path: '/me' },

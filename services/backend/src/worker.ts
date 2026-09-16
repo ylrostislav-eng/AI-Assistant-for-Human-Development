@@ -1,4 +1,5 @@
 import { loadConfig } from './config.ts';
+import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
 import { createPool } from './shared/db/pool.ts';
 import { logError } from './shared/logging/logger.ts';
@@ -21,6 +22,9 @@ const HANDLERS: Record<string, JobHandler> = {};
 const POLL_INTERVAL_MS = 5_000;
 
 async function main(): Promise<void> {
+  // Файл окружения читается до конфигурации, иначе значения из него не увидит
+  // ни одна проверка обязательных переменных.
+  loadEnvFile();
   const config = loadConfig();
   const database = createPool(config.database);
 

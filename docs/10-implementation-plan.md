@@ -55,7 +55,7 @@ T-04 hosting можно подготовить раньше для synthetic dev
 
 | ID | Scope / место | Зависимости | Проверки / готовый результат |
 |---|---|---|---|
-| T-01 | Identity mapping, `POST /auth/telegram`, installation/session binding | T-00a/e | Forged/expired/future/duplicate initData, allowlist, replay, account isolation, secure storage fallback; реальный launch smoke отдельно |
+| T-01 ◑ | Identity mapping, `POST /auth/telegram` (**сделано**, миграция 013); installation binding — нет | T-00a/e | Forged/expired/future/duplicate initData, allowlist, replay, account isolation, secure storage fallback; реальный launch smoke отдельно |
 | T-05 | Одноразовый platform spike и capability report | T-01; тестовый бот/HTTPS/телефон для device части | Fullscreen/safe areas/back, IndexedDB close/reopen/offline/kill, SecureStorage, home shortcut, mic. Указать observed failures, выбрать поддерживаемые clients |
 | T-06 | `GET /bootstrap`, `GET /sync/pull`, bounded Today/goals reads, OpenAPI | T-00a, P1-03 | Consistent snapshot+cursor, batches без дыр, paging upper bound, 410/rebootstrap, два tenants |
 | T-02 | Webhook inbox, sender mapping, `/start`/`today`/`capture`, action tokens | T-01, T-06, T-00b/e | Duplicate/forged update, stale/foreign callback, response loss, blocked bot, 429; commands используют тот же bus. Completion подключать после P1-06 |

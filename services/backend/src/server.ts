@@ -1,5 +1,6 @@
 import { createApp } from './app.ts';
 import { loadConfig } from './config.ts';
+import { loadEnvFile } from './shared/config/load-env.ts';
 import { createPool } from './shared/db/pool.ts';
 import { logError } from './shared/logging/logger.ts';
 import { assertSafeDatabaseRole } from './shared/db/role-guard.ts';
@@ -9,6 +10,9 @@ import { assertSafeDatabaseRole } from './shared/db/role-guard.ts';
  * чтобы его перезапуск не ронял приём запросов.
  */
 async function main(): Promise<void> {
+  // Файл окружения читается до конфигурации, иначе значения из него не увидит
+  // ни одна проверка обязательных переменных.
+  loadEnvFile();
   const config = loadConfig();
   const database = createPool(config.database);
 
