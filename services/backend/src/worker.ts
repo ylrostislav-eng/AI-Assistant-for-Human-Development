@@ -1,6 +1,11 @@
 import { loadConfig } from './config.ts';
 import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
+import {
+  createBotApiTransport,
+  deliverPendingMessages,
+  reapStuckSends,
+} from './modules/telegram/delivery.ts';
 import { processPendingUpdates, purgeProcessedPayloads } from './modules/telegram/inbox.ts';
 import { createPool } from './shared/db/pool.ts';
 import { logError } from './shared/logging/logger.ts';
@@ -29,6 +34,11 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const database = createPool(config.database);
 
+  // Без токена бота отправлять нечем и некуда: worker продолжает работать,
+  // но молча делать вид, что доставляет, он не должен.
+  const transport =
+    config.telegram.botToken === null ? null : createBotApiTransport(config.telegram.botToken);
+
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -50,11 +60,24 @@ async function main(): Promise<void> {
       // него, а дальше хранятся без причины.
       const purged = await purgeProcessedPayloads(database);
 
+      // Оборванные отправки разбираются до новых: иначе строка, оставленная
+      // умершим процессом, держится в `sending` весь следующий проход.
+      const reaped = transport === null ? 0 : await reapStuckSends(database);
+      const delivery =
+        transport === null
+          ? { sent: 0, retried: 0, failed: 0, unknown: 0 }
+          : await deliverPendingMessages(database, transport);
+
       const dispatched = await dispatchOutbox(database, { kinds: Object.keys(HANDLERS) });
       const batch = await runJobBatch(database, HANDLERS);
       if (
         updates.processed > 0 ||
         purged > 0 ||
+        reaped > 0 ||
+        delivery.sent > 0 ||
+        delivery.retried > 0 ||
+        delivery.failed > 0 ||
+        delivery.unknown > 0 ||
         dispatched.queued > 0 ||
         batch.done > 0 ||
         batch.retried > 0 ||
@@ -64,6 +87,11 @@ async function main(): Promise<void> {
         console.log(
           `Обновлений Telegram: ${updates.processed}, ответов: ${updates.replies}; ` +
             `тел очищено: ${purged}; ` +
+            `доставлено: ${delivery.sent}, к повтору: ${delivery.retried}, ` +
+            // Неизвестный исход виден отдельно: это не успех и не отказ, и
+            // накопление таких строк означает, что связь рвётся.
+            `неизвестно: ${delivery.unknown}, отказов: ${delivery.failed}, ` +
+            `оборвано: ${reaped}; ` +
             `в очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
             `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}; ` +
             // Потерянная аренда означает, что проход шёл дольше её срока: это
