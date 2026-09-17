@@ -23,7 +23,7 @@
 | AI/RPG | Документация, JSON rules, arithmetic sanity | Production AI/Progression/ledger/Recovery/reviews отсутствуют |
 | Operations | Локальный DB script; **развёрнуто на Railway**: PostgreSQL 18 с томом, API из `ops/Dockerfile`, свой https-адрес, роли и 14 миграций в боевой базе | Bot setup, worker как отдельный сервис, backup/restore, реальный пилот |
 
-Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `POST /auth/telegram`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`, `GET /bootstrap`, `GET /sync/pull`. [OpenAPI](../packages/contracts/openapi.yaml) отражает их; будущие маршруты в docs/06 пока не существуют. `apps/miniapp` пока не создан.
+Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `POST /auth/telegram`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`, `POST /sync/push`, `GET /bootstrap`, `GET /sync/pull`. [OpenAPI](../packages/contracts/openapi.yaml) отражает их; будущие маршруты в docs/06 пока не существуют. `apps/miniapp` пока не создан.
 
 ## 3. Найденные ограничения кода
 
@@ -305,9 +305,17 @@ Baseline `4ecfee7`, исходное дерево чистое.
 
 Затем T-02b (сопоставление отправителя, `/start`, `/today` через worker),
 T-02c (action tokens для кнопок и завершение заданий), T-03 Mini App.
-Параллельно не закрыты: `POST /sync/push`, bounded reads `/goals` `/quests`
-`/calendar`, удаление пачек по сроку удержания, worker отдельным сервисом на
-Railway, резервное копирование.
+Параллельно не закрыты: bounded reads `/goals` `/quests` `/calendar`, удаление
+пачек по сроку удержания, worker отдельным сервисом на Railway, резервное
+копирование.
+
+`POST /sync/push` сделан: пачка до пятидесяти команд, у каждой собственная
+квитанция. Разбор конверта вынесен в `executeEnvelope` и общий с
+`POST /commands` — отдельный разбор для пачки разошёлся бы с одиночным
+незаметно, и часть проверок действовала бы только на одном пути. Отказ
+возвращается значением, а не исключением: одна негодная команда не отменяет
+остальные, иначе человек, у которого одно задание успели завершить с другого
+устройства, теряет все отметки за день разом.
 
 Порядок чтения для новой сессии: AGENTS → этот файл → 00/10 → 15 → 14 → 02/06.
 

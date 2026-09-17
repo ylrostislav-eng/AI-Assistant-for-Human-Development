@@ -29,6 +29,7 @@ export const API_ROUTES = [
   { method: 'post', path: '/auth/logout' },
   { method: 'get', path: '/me' },
   { method: 'post', path: '/commands' },
+  { method: 'post', path: '/sync/push' },
   { method: 'get', path: '/bootstrap' },
   { method: 'get', path: '/sync/pull' },
 ] as const;

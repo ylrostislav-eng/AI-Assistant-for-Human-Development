@@ -391,6 +391,90 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /sync/push:
+    post:
+      summary: Пачка команд
+      description: |
+        Клиент, накопивший действия без сети, отправляет их одним запросом.
+        Команды выполняются по порядку и каждая получает **собственную
+        квитанцию**: одна негодная не отменяет остальные. Иначе человек, у
+        которого одно задание успели завершить с другого устройства, теряет и
+        все прочие отметки за день, причём молча.
+
+        Поэтому ответ — всегда 200, а отдельные отказы описаны в квитанциях.
+        Общий код ошибки заставил бы клиента считать неудачной и ту часть, что
+        применилась.
+
+        Разбор каждого конверта тот же, что у `POST /commands`: закрытая схема
+        нагрузки, политика цели и версии, идемпотентность по `command_id`.
+        Отдельный разбор для пачки разошёлся бы с одиночным незаметно.
+
+        Пачка длиннее пятидесяти команд отклоняется целиком, до выполнения:
+        частично применённая пачка оставляет клиента в состоянии, которого он
+        не ожидает.
+      operationId: pushCommands
+      security:
+        - accessToken: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [commands]
+              properties:
+                commands:
+                  type: array
+                  minItems: 1
+                  maxItems: 50
+                  items:
+                    $ref: './schemas/command-envelope.schema.json'
+      responses:
+        '200':
+          description: Квитанция на каждую команду пачки
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [receipts, server_time]
+                properties:
+                  receipts:
+                    type: array
+                    items:
+                      type: object
+                      required: [command_id, status]
+                      properties:
+                        command_id:
+                          type: string
+                          format: uuid
+                        status:
+                          enum: [committed, already_applied, rejected, conflict, not_found]
+                        error:
+                          type: string
+                        detail:
+                          type: string
+                        committed_seq:
+                          type: string
+                        result:
+                          type: object
+                  server_time:
+                    type: string
+                    format: date-time
+        '400':
+          description: Пустая пачка (`empty_batch`), длиннее предела (`batch_too_large`) или негодное тело
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Нет действующего access-токена
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /bootstrap:
     get:
       summary: Начальный снимок состояния

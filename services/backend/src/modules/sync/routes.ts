@@ -188,7 +188,174 @@ function assertVersionPolicy(command: CommandRequest, definition: CommandDefinit
   }
 }
 
+/**
+ * Итог одной команды в виде, пригодном и для одиночного ответа, и для строки
+ * квитанции в пачке.
+ *
+ * Разбор один на оба пути намеренно. Отдельный разбор для пачки разошёлся бы с
+ * одиночным незаметно, и часть проверок действовала бы только на одном из них —
+ * ровно так и появляются протоколы «для бота» в обход общего контракта
+ * (docs/14, раздел 4).
+ */
+export interface CommandOutcomeReport {
+  readonly status: 'committed' | 'already_applied' | 'rejected' | 'conflict' | 'not_found';
+  readonly httpStatus: number;
+  readonly error?: string;
+  readonly detail?: string;
+  readonly committedSeq?: string;
+  readonly result?: Record<string, unknown>;
+}
+
+function rejection(httpStatus: number, error: string, detail?: string): CommandOutcomeReport {
+  const status = httpStatus === 409 ? 'conflict' : httpStatus === 404 ? 'not_found' : 'rejected';
+  return { status, httpStatus, error, ...(detail === undefined ? {} : { detail }) };
+}
+
+/**
+ * Выполнение одной команды: проверка контракта, политика цели и версии,
+ * собственно действие и разбор отказов.
+ *
+ * Отказ возвращается значением, а не исключением: в пачке одна негодная команда
+ * не должна отменять остальные. Человек, у которого одно задание успели
+ * завершить с другого устройства, иначе теряет все отметки за день разом.
+ */
+export async function executeEnvelope(
+  database: Database,
+  userId: string,
+  envelope: CommandEnvelope,
+): Promise<CommandOutcomeReport> {
+  const definition = COMMANDS.get(envelope.kind);
+  if (definition === undefined) {
+    return rejection(400, 'unknown_command_kind');
+  }
+
+  // Зависимость между командами не реализована. Молча выполнить команду,
+  // для которой клиент заявил предшественника, значит нарушить порядок,
+  // который он считает гарантированным: «отметить выполнение» уехало бы
+  // вперёд «создать задание».
+  if (envelope.depends_on_command_id !== null) {
+    return rejection(400, 'unsupported_dependency');
+  }
+
+  let command: CommandRequest;
+  let handler: CommandHandler;
+  try {
+    assertPayloadMatchesSchema(envelope.kind, envelope.payload);
+    command = {
+      userId,
+      commandId: envelope.command_id,
+      kind: envelope.kind,
+      schemaVersion: envelope.schema_version,
+      targetId: resolveTarget(envelope, definition),
+      expectedVersion: resolveExpectedVersion(envelope),
+      dependsOnCommandId: envelope.depends_on_command_id,
+      payload: envelope.payload,
+    };
+    assertVersionPolicy(command, definition);
+    handler = definition.build(command);
+  } catch (error) {
+    if (error instanceof TargetMismatchError) {
+      return rejection(400, 'target_mismatch', error.message);
+    }
+    if (error instanceof VersionPolicyError) {
+      return rejection(400, 'version_required', error.message);
+    }
+    if (error instanceof PayloadValidationError || error instanceof InvalidCommandPayloadError) {
+      return rejection(400, 'invalid_payload', error.message);
+    }
+    throw error;
+  }
+
+  try {
+    const receipt = await executeCommand(database, command, handler);
+    return {
+      status: receipt.duplicate ? 'already_applied' : 'committed',
+      httpStatus: 200,
+      committedSeq: receipt.committedSeq,
+      result: receipt.result,
+    };
+  } catch (error) {
+    if (error instanceof PayloadMismatchError) {
+      // 409, а не 400: запрос сам по себе корректен, конфликтует он с уже
+      // зафиксированным состоянием.
+      return rejection(409, 'command_id_reused');
+    }
+    if (error instanceof VersionConflictError) {
+      // Клиент решал по устаревшему экрану: состояние уже другое.
+      return rejection(409, 'version_conflict');
+    }
+    if (error instanceof InvalidTransitionError) {
+      // Повторное завершение приходит сюда: второй награды за одно
+      // действие быть не должно.
+      return rejection(409, 'invalid_transition');
+    }
+    if (error instanceof QuestNotFoundError) {
+      return rejection(404, 'not_found');
+    }
+    if (error instanceof InvalidCommandPayloadError) {
+      return rejection(400, 'invalid_payload', error.message);
+    }
+    // 23505 — нарушение уникальности. Запрос корректен, конфликтует он с
+    // уже существующей строкой: два экземпляра на один день дали бы две
+    // награды за одну задачу. Без этой ветки клиент видит 500 и считает
+    // ошибку сервера своей виной.
+    if ((error as { code?: string }).code === '23505') {
+      return rejection(409, 'already_exists');
+    }
+    throw error;
+  }
+}
+
+/** Предел пачки. Больше — отдельными запросами (docs/06, раздел 3). */
+const MAX_BATCH = 50;
+
+const pushBodySchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['commands'],
+  properties: {
+    commands: { type: 'array', items: commandEnvelopeSchema },
+  },
+} as const;
+
 export function registerCommandRoutes(app: FastifyInstance, database: Database): void {
+  app.post('/sync/push', { schema: { body: pushBodySchema } }, async (request, reply) => {
+    const userId = request.userId;
+    if (userId === undefined) {
+      return reply.code(401).send({ error: 'unauthorized' });
+    }
+
+    const { commands } = request.body as { commands: readonly CommandEnvelope[] };
+    if (commands.length === 0) {
+      return reply.code(400).send({ error: 'empty_batch' });
+    }
+    if (commands.length > MAX_BATCH) {
+      // Отказ до выполнения, а не после половины: частично применённая пачка
+      // оставляет клиента в состоянии, которого он не ожидает.
+      return reply.code(400).send({ error: 'batch_too_large' });
+    }
+
+    // Последовательно: команды одного пользователя и так выстраиваются в
+    // очередь блокировкой счётчика, а параллельный запуск лишь запутал бы
+    // порядок квитанций.
+    const receipts = [];
+    for (const envelope of commands) {
+      const outcome = await executeEnvelope(database, userId, envelope);
+      receipts.push({
+        command_id: envelope.command_id,
+        status: outcome.status,
+        ...(outcome.error === undefined ? {} : { error: outcome.error }),
+        ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
+        ...(outcome.committedSeq === undefined ? {} : { committed_seq: outcome.committedSeq }),
+        ...(outcome.result === undefined ? {} : { result: outcome.result }),
+      });
+    }
+
+    // 200 на всю пачку: отдельные отказы описаны квитанциями. Общий код ошибки
+    // заставил бы клиента считать неудачной и ту часть, что применилась.
+    return reply.send({ receipts, server_time: new Date().toISOString() });
+  });
+
   app.post('/commands', { schema: { body: commandEnvelopeSchema } }, async (request, reply) => {
     const userId = request.userId;
     if (userId === undefined) {
@@ -196,86 +363,20 @@ export function registerCommandRoutes(app: FastifyInstance, database: Database):
     }
 
     const envelope = request.body as CommandEnvelope;
-    const definition = COMMANDS.get(envelope.kind);
-    if (definition === undefined) {
-      return reply.code(400).send({ error: 'unknown_command_kind' });
-    }
+    const outcome = await executeEnvelope(database, userId, envelope);
 
-    // Зависимость между командами не реализована. Молча выполнить команду,
-    // для которой клиент заявил предшественника, значит нарушить порядок,
-    // который он считает гарантированным: «отметить выполнение» уехало бы
-    // вперёд «создать задание».
-    if (envelope.depends_on_command_id !== null) {
-      return reply.code(400).send({ error: 'unsupported_dependency' });
-    }
-
-    let command: CommandRequest;
-    let handler: CommandHandler;
-    try {
-      assertPayloadMatchesSchema(envelope.kind, envelope.payload);
-      command = {
-        userId,
-        commandId: envelope.command_id,
-        kind: envelope.kind,
-        schemaVersion: envelope.schema_version,
-        targetId: resolveTarget(envelope, definition),
-        expectedVersion: resolveExpectedVersion(envelope),
-        dependsOnCommandId: envelope.depends_on_command_id,
-        payload: envelope.payload,
-      };
-      assertVersionPolicy(command, definition);
-      handler = definition.build(command);
-    } catch (error) {
-      if (error instanceof TargetMismatchError) {
-        return reply.code(400).send({ error: 'target_mismatch', detail: error.message });
-      }
-      if (error instanceof VersionPolicyError) {
-        return reply.code(400).send({ error: 'version_required', detail: error.message });
-      }
-      if (error instanceof PayloadValidationError || error instanceof InvalidCommandPayloadError) {
-        return reply.code(400).send({ error: 'invalid_payload', detail: error.message });
-      }
-      throw error;
-    }
-
-    try {
-      const receipt = await executeCommand(database, command, handler);
-
-      return reply.send({
-        command_id: envelope.command_id,
-        committed_seq: receipt.committedSeq,
-        duplicate: receipt.duplicate,
-        result: receipt.result,
+    if (outcome.httpStatus !== 200) {
+      return reply.code(outcome.httpStatus).send({
+        error: outcome.error,
+        ...(outcome.detail === undefined ? {} : { detail: outcome.detail }),
       });
-    } catch (error) {
-      if (error instanceof PayloadMismatchError) {
-        // 409, а не 400: запрос сам по себе корректен, конфликтует он с уже
-        // зафиксированным состоянием.
-        return reply.code(409).send({ error: 'command_id_reused' });
-      }
-      if (error instanceof VersionConflictError) {
-        // Клиент решал по устаревшему экрану: состояние уже другое.
-        return reply.code(409).send({ error: 'version_conflict' });
-      }
-      if (error instanceof InvalidTransitionError) {
-        // Повторное завершение приходит сюда: второй награды за одно
-        // действие быть не должно.
-        return reply.code(409).send({ error: 'invalid_transition' });
-      }
-      if (error instanceof QuestNotFoundError) {
-        return reply.code(404).send({ error: 'not_found' });
-      }
-      if (error instanceof InvalidCommandPayloadError) {
-        return reply.code(400).send({ error: 'invalid_payload', detail: error.message });
-      }
-      // 23505 — нарушение уникальности. Запрос корректен, конфликтует он с
-      // уже существующей строкой: два экземпляра на один день дали бы две
-      // награды за одну задачу. Без этой ветки клиент видит 500 и считает
-      // ошибку сервера своей виной.
-      if ((error as { code?: string }).code === '23505') {
-        return reply.code(409).send({ error: 'already_exists' });
-      }
-      throw error;
     }
+
+    return reply.send({
+      command_id: envelope.command_id,
+      committed_seq: outcome.committedSeq,
+      duplicate: outcome.status === 'already_applied',
+      result: outcome.result,
+    });
   });
 }
