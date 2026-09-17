@@ -1,5 +1,8 @@
+import { randomUUID } from 'node:crypto';
+
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
+import { executeEnvelope } from '../sync/routes.ts';
 
 /**
  * Разбор принятых обновлений Telegram (T-02b, docs/14, разделы 2 и 4).
@@ -23,6 +26,21 @@ const DEFAULT_LIMIT = 20;
  */
 const PAYLOAD_RETENTION_HOURS = 24;
 
+/**
+ * Сколько живёт кнопка. Сутки: список заданий за это время всё равно
+ * устаревает, а вечный ключ незачем держать.
+ */
+const ACTION_TOKEN_HOURS = 24;
+
+/**
+ * Непрозрачный ключ кнопки. В `callback_data` помещается 64 байта, и класть
+ * туда состояние нельзя — клиент подменит его чем угодно. Дефисы исключены:
+ * ключ не должен выглядеть разбираемым, чтобы никто не начал его парсить.
+ */
+function createActionToken(): string {
+  return randomUUID().replaceAll('-', '');
+}
+
 export interface ProcessOptions {
   /** Кто допущен к пилоту. Пустой список означает «никого». */
   readonly allowedUserIds: readonly string[];
@@ -42,9 +60,15 @@ interface PendingUpdate {
   readonly payload: Record<string, unknown>;
 }
 
+interface InlineButton {
+  readonly text: string;
+  readonly callback_data: string;
+}
+
 interface Reply {
   readonly kind: string;
   readonly body: string;
+  readonly replyMarkup?: { inline_keyboard: InlineButton[][] };
 }
 
 /** Текст сообщения, если он есть; у нажатия кнопки его нет. */
@@ -82,21 +106,52 @@ function chatId(payload: Record<string, unknown>): string | null {
  * сообщение устаревает в тот момент, когда то же задание завершают в другом
  * месте, и пересказ переписки показал бы человеку прошлое.
  */
-async function composeToday(client: TransactionClient, userId: string): Promise<string> {
+async function composeToday(client: TransactionClient, userId: string): Promise<Reply> {
   await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
-  const quests = await client.query<{ template_snapshot: { title?: string } }>(
-    `SELECT template_snapshot FROM quest_occurrences
+  const quests = await client.query<{
+    id: string;
+    version: string;
+    template_snapshot: { title?: string };
+  }>(
+    `SELECT id, version, template_snapshot FROM quest_occurrences
       WHERE execution_status IN ('planned', 'active', 'partial')
       ORDER BY created_at
       LIMIT 20`,
   );
 
   if (quests.rowCount === 0) {
-    return 'Сегодня заданий нет. Их пока некому создать: планирование появится дальше.';
+    return {
+      kind: 'today',
+      body: 'Сегодня заданий нет. Их пока некому создать: планирование появится дальше.',
+    };
   }
 
-  const titles = quests.rows.map((row) => `• ${row.template_snapshot.title ?? 'без названия'}`);
-  return [`Сегодня заданий: ${quests.rowCount}`, ...titles].join('\n');
+  const buttons: InlineButton[][] = [];
+  const titles: string[] = [];
+
+  for (const quest of quests.rows) {
+    const title = quest.template_snapshot.title ?? 'без названия';
+    titles.push(`• ${title}`);
+
+    // Ключ выдаётся вместе с версией, снятой прямо сейчас, и со стабильным
+    // идентификатором команды. Версия делает нажатие по устаревшему списку
+    // честным конфликтом, а идентификатор — повторное нажатие безвредным.
+    const token = createActionToken();
+    await client.query(
+      `INSERT INTO telegram_action_tokens
+         (token, user_id, occurrence_id, action, expected_version, command_id, expires_at)
+       VALUES ($1, $2, $3, 'complete_quest', $4, gen_random_uuid(),
+               now() + make_interval(hours => $5))`,
+      [token, userId, quest.id, Number(quest.version), ACTION_TOKEN_HOURS],
+    );
+    buttons.push([{ text: `Сделал: ${title}`.slice(0, 64), callback_data: token }]);
+  }
+
+  return {
+    kind: 'today',
+    body: [`Сегодня заданий: ${quests.rowCount}`, ...titles].join('\n'),
+    replyMarkup: { inline_keyboard: buttons },
+  };
 }
 
 /**
@@ -133,18 +188,106 @@ async function composeReply(
   }
 
   if (text.startsWith('/today')) {
-    return { kind: 'today', body: await composeToday(client, userId) };
+    return composeToday(client, userId);
   }
 
   if (text === '') {
-    // Нажатие кнопки и прочее без текста разберёт T-02c; молча промолчать
-    // здесь лучше, чем ответить не на то.
+    // Прочее без текста: ответить не на то хуже, чем промолчать. Нажатия
+    // кнопок сюда не попадают — они разбираются отдельно, до этого места.
     return null;
   }
 
   return {
     kind: 'unknown_command',
     body: 'Пока понимаю только /today. Свободный разбор появится вместе с ИИ.',
+  };
+}
+
+/** Ответ, одинаковый для просроченного и несуществующего ключа. */
+const EXPIRED_BUTTON: Reply = {
+  kind: 'expired_button',
+  body: 'Эта кнопка больше не действует. Отправьте /today, чтобы обновить список.',
+};
+
+/**
+ * Нажатие кнопки.
+ *
+ * Ключ непрозрачен, и всё, что он значит, лежит на сервере. Владелец
+ * проверяется отдельно: политика изоляции и так не покажет чужую строку, но
+ * полагаться на одно только это значит зависеть от того, что контекст
+ * пользователя установлен верно.
+ *
+ * Несуществующий ключ получает тот же ответ, что и просроченный: различие
+ * подсказало бы подбирающему, какие ключи существуют.
+ */
+async function handleButtonPress(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string | null,
+): Promise<Reply | null> {
+  const callback = update.payload['callback_query'] as { data?: unknown } | undefined;
+  const data = callback?.data;
+  if (userId === null || typeof data !== 'string') {
+    return EXPIRED_BUTTON;
+  }
+
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  const found = await client.query<{
+    occurrence_id: string;
+    action: string;
+    expected_version: string;
+    command_id: string;
+  }>(
+    `SELECT occurrence_id, action, expected_version, command_id
+       FROM telegram_action_tokens
+      WHERE token = $1 AND user_id = $2 AND expires_at > now()`,
+    [data, userId],
+  );
+
+  const token = found.rows[0];
+  if (token === undefined) {
+    return EXPIRED_BUTTON;
+  }
+
+  // Команда идёт тем же путём, что у Mini App: отдельного протокола для бота
+  // быть не должно (docs/14, раздел 4). Идентификатор команды взят из ключа и
+  // не меняется, поэтому повторное нажатие возвращает прежнюю квитанцию, а не
+  // даёт второй эффект.
+  const outcome = await executeEnvelope(db, userId, {
+    schema_version: 1,
+    command_id: token.command_id,
+    device_id: token.command_id,
+    kind: token.action,
+    aggregate_id: token.occurrence_id,
+    expected_version: Number(token.expected_version),
+    client_created_at: new Date().toISOString(),
+    depends_on_command_id: null,
+    payload: {},
+  });
+
+  await client.query(
+    `UPDATE telegram_action_tokens SET consumed_at = COALESCE(consumed_at, now())
+      WHERE token = $1`,
+    [data],
+  );
+
+  if (outcome.status === 'committed' || outcome.status === 'already_applied') {
+    return { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' };
+  }
+
+  if (outcome.error === 'version_conflict' || outcome.error === 'invalid_transition') {
+    // Задание изменилось в другом месте. Менять состояние нельзя: человек
+    // нажимал по экрану, которого уже нет.
+    return {
+      kind: 'stale_button',
+      body: 'Задание изменилось с момента показа. Отправьте /today, чтобы увидеть, как есть сейчас.',
+    };
+  }
+
+  return {
+    kind: 'button_failed',
+    body: 'Не получилось записать. Отправьте /today и попробуйте ещё раз.',
   };
 }
 
@@ -192,16 +335,44 @@ export async function processPendingUpdates(
       }
 
       const target = chatId(update.payload);
-      const reply = sender === null || target === null ? null : await composeReply(client, update, userId);
+      const isButton = update.kind === 'callback_query';
+      const reply =
+        sender === null || target === null
+          ? null
+          : isButton
+            ? await handleButtonPress(db, client, update, userId)
+            : await composeReply(client, update, userId);
 
       if (reply !== null && target !== null) {
         await client.query(
-          `INSERT INTO telegram_messages (user_id, chat_id, kind, body, dedupe_key)
-           VALUES ($1::uuid, $2, $3, $4, $5)
+          `INSERT INTO telegram_messages
+             (user_id, chat_id, kind, body, dedupe_key, reply_markup)
+           VALUES ($1::uuid, $2, $3, $4, $5, $6::jsonb)
            ON CONFLICT (dedupe_key) DO NOTHING`,
-          [userId, target, reply.kind, reply.body, `update:${update.update_id}`],
+          [
+            userId,
+            target,
+            reply.kind,
+            reply.body,
+            `update:${update.update_id}`,
+            reply.replyMarkup === undefined ? null : JSON.stringify(reply.replyMarkup),
+          ],
         );
         replies += 1;
+      }
+
+      // Подтверждение нажатия: без него кнопка «крутится» у человека на
+      // экране. Оно ставится в ту же очередь и отдельной записью — это другой
+      // метод Bot API, и его неудача не должна отменять сам ответ.
+      const callbackId = (update.payload['callback_query'] as { id?: unknown } | undefined)?.id;
+      if (isButton && typeof callbackId === 'string') {
+        await client.query(
+          `INSERT INTO telegram_messages
+             (user_id, chat_id, kind, body, dedupe_key, method, callback_query_id)
+           VALUES ($1::uuid, $2, 'callback_ack', '', $3, 'answerCallbackQuery', $4)
+           ON CONFLICT (dedupe_key) DO NOTHING`,
+          [userId, target ?? '0', `ack:${update.update_id}`, callbackId],
+        );
       }
 
       await client.query('UPDATE telegram_updates SET processed_at = now() WHERE id = $1', [

@@ -28,7 +28,17 @@ export type TransportResult =
   | { readonly outcome: 'unknown'; readonly code: string };
 
 export interface TelegramTransport {
-  sendMessage(chatId: string, text: string): Promise<TransportResult>;
+  sendMessage(
+    chatId: string,
+    text: string,
+    replyMarkup?: Record<string, unknown> | null,
+  ): Promise<TransportResult>;
+  /**
+   * Подтверждение нажатия кнопки. Без него кнопка «крутится» у человека на
+   * экране; при этом «принято» не означает «выполнено», и текст подтверждения
+   * не должен обещать больше, чем случилось.
+   */
+  answerCallbackQuery(callbackQueryId: string, text: string): Promise<TransportResult>;
 }
 
 export interface DeliveryOptions {
@@ -56,6 +66,9 @@ interface ClaimedMessage {
   readonly body: string;
   readonly attempts: number;
   readonly max_attempts: number;
+  readonly method: string;
+  readonly callback_query_id: string | null;
+  readonly reply_markup: Record<string, unknown> | null;
 }
 
 /**
@@ -89,7 +102,8 @@ export async function deliverPendingMessages(
           LIMIT $1
           FOR UPDATE SKIP LOCKED
        )
-       RETURNING id, chat_id, body, attempts, max_attempts`,
+       RETURNING id, chat_id, body, attempts, max_attempts, method, callback_query_id,
+                 reply_markup`,
       [limit],
     );
     return result.rows;
@@ -103,7 +117,10 @@ export async function deliverPendingMessages(
   for (const message of claimed) {
     let outcome: TransportResult;
     try {
-      outcome = await transport.sendMessage(message.chat_id, message.body);
+      outcome =
+        message.method === 'answerCallbackQuery' && message.callback_query_id !== null
+          ? await transport.answerCallbackQuery(message.callback_query_id, message.body)
+          : await transport.sendMessage(message.chat_id, message.body, message.reply_markup);
     } catch (error) {
       // Исключение транспорта — это тоже неизвестный исход: запрос мог уйти.
       logError('telegram_send_failed', error, { job_id: message.id });
@@ -115,7 +132,9 @@ export async function deliverPendingMessages(
         `UPDATE telegram_messages SET state = 'sent', telegram_message_id = $2,
                 sending_since = NULL, updated_at = now()
           WHERE id = $1`,
-        [message.id, outcome.messageId],
+        // У подтверждения нажатия идентификатора сообщения нет и быть не
+        // может: Telegram его не возвращает.
+        [message.id, outcome.messageId === 0 ? null : outcome.messageId],
       );
       sent += 1;
       continue;
@@ -188,14 +207,36 @@ export async function reapStuckSends(db: Database): Promise<number> {
  */
 export function createBotApiTransport(botToken: string, timeoutMs = 10_000): TelegramTransport {
   return {
-    async sendMessage(chatId: string, text: string): Promise<TransportResult> {
+    async sendMessage(
+      chatId: string,
+      text: string,
+      replyMarkup?: Record<string, unknown> | null,
+    ): Promise<TransportResult> {
+      return call('sendMessage', {
+        chat_id: chatId,
+        text,
+        ...(replyMarkup === undefined || replyMarkup === null
+          ? {}
+          : { reply_markup: replyMarkup }),
+      });
+    },
+
+    async answerCallbackQuery(callbackQueryId: string, text: string): Promise<TransportResult> {
+      return call('answerCallbackQuery', {
+        callback_query_id: callbackQueryId,
+        ...(text === '' ? {} : { text }),
+      });
+    },
+  };
+
+  async function call(method: string, body: Record<string, unknown>): Promise<TransportResult> {
       const controller = new AbortController();
       const timer = setTimeout(() => controller.abort(), timeoutMs);
       try {
-        const response = await fetch(`https://api.telegram.org/bot${botToken}/sendMessage`, {
+        const response = await fetch(`https://api.telegram.org/bot${botToken}/${method}`, {
           method: 'POST',
           headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ chat_id: chatId, text }),
+          body: JSON.stringify(body),
           signal: controller.signal,
         });
 
@@ -210,8 +251,10 @@ export function createBotApiTransport(botToken: string, timeoutMs = 10_000): Tel
           error_code?: number;
         };
 
-        if (response.ok && payload.ok === true && typeof payload.result?.message_id === 'number') {
-          return { outcome: 'sent', messageId: payload.result.message_id };
+        if (response.ok && payload.ok === true) {
+          // `answerCallbackQuery` возвращает `result: true` без идентификатора
+          // сообщения: нуль здесь означает «подтверждено, ссылаться не на что».
+          return { outcome: 'sent', messageId: payload.result?.message_id ?? 0 };
         }
 
         if (response.status === 429) {
@@ -238,6 +281,5 @@ export function createBotApiTransport(botToken: string, timeoutMs = 10_000): Tel
       } finally {
         clearTimeout(timer);
       }
-    },
-  };
+  }
 }

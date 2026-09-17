@@ -100,6 +100,10 @@ function transportReturning(
       }
       return result;
     },
+    async answerCallbackQuery(): Promise<TransportResult> {
+      transport.calls += 1;
+      return result;
+    },
   };
   return transport;
 }
