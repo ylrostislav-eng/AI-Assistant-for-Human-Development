@@ -1,6 +1,7 @@
 import { loadConfig } from './config.ts';
 import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
+import { processPendingUpdates, purgeProcessedPayloads } from './modules/telegram/inbox.ts';
 import { createPool } from './shared/db/pool.ts';
 import { logError } from './shared/logging/logger.ts';
 
@@ -39,9 +40,21 @@ async function main(): Promise<void> {
 
   while (!stopping) {
     try {
+      // Разбор обновлений Telegram идёт здесь, а не в приёме: внешний вызов
+      // внутри приёма упёрся бы в таймаут Telegram и задержал бы подтверждение,
+      // из-за которого он перестаёт повторять доставку.
+      const updates = await processPendingUpdates(database, {
+        allowedUserIds: config.telegram.allowedUserIds,
+      });
+      // Сырые тела — личная переписка: они нужны до разбора и недолго после
+      // него, а дальше хранятся без причины.
+      const purged = await purgeProcessedPayloads(database);
+
       const dispatched = await dispatchOutbox(database, { kinds: Object.keys(HANDLERS) });
       const batch = await runJobBatch(database, HANDLERS);
       if (
+        updates.processed > 0 ||
+        purged > 0 ||
         dispatched.queued > 0 ||
         batch.done > 0 ||
         batch.retried > 0 ||
@@ -49,7 +62,9 @@ async function main(): Promise<void> {
         batch.leasesLost > 0
       ) {
         console.log(
-          `В очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
+          `Обновлений Telegram: ${updates.processed}, ответов: ${updates.replies}; ` +
+            `тел очищено: ${purged}; ` +
+            `в очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
             `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}; ` +
             // Потерянная аренда означает, что проход шёл дольше её срока: это
             // повод увеличить срок, а не молча пропустить строку в отчёте.
