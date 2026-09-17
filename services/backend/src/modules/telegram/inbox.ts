@@ -1,8 +1,10 @@
-import { randomUUID } from 'node:crypto';
+import { createHash, randomUUID } from 'node:crypto';
 
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
+import { userDayAt } from '../../shared/time/user-day.ts';
 import { executeEnvelope } from '../sync/routes.ts';
+import { parseNewQuest } from './new-quest.ts';
 
 /**
  * Разбор принятых обновлений Telegram (T-02b, docs/14, разделы 2 и 4).
@@ -161,6 +163,7 @@ async function composeToday(client: TransactionClient, userId: string): Promise<
  * ответили, пишет снова и снова и считает, что сломалось.
  */
 async function composeReply(
+  db: Database,
   client: TransactionClient,
   update: PendingUpdate,
   userId: string | null,
@@ -181,7 +184,10 @@ async function composeReply(
       body: [
         'Система развития на связи.',
         '',
-        'Сейчас умею немного: /today покажет задания на сегодня.',
+        'Что умею сейчас:',
+        '/new Английский 30м — создать задание на сегодня',
+        '/today — показать задания с кнопками',
+        '',
         'Награды, уровни и планирование появятся дальше — обещать их сейчас было бы нечестно.',
       ].join('\n'),
     };
@@ -189,6 +195,10 @@ async function composeReply(
 
   if (text.startsWith('/today')) {
     return composeToday(client, userId);
+  }
+
+  if (text.startsWith('/new')) {
+    return createQuestFromLine(db, client, update, userId, text);
   }
 
   if (text === '') {
@@ -199,7 +209,114 @@ async function composeReply(
 
   return {
     kind: 'unknown_command',
-    body: 'Пока понимаю только /today. Свободный разбор появится вместе с ИИ.',
+    body: 'Пока понимаю /new и /today. Свободный разбор появится вместе с ИИ.',
+  };
+}
+
+/**
+ * Идентификатор команды, выведенный из обновления.
+ *
+ * Обязателен именно детерминированный: команда выполняется своей транзакцией, и
+ * если внешняя (та, что помечает обновление разобранным) упадёт после неё,
+ * обновление разберётся второй раз. Со случайным идентификатором это создало бы
+ * второе задание; с выведенным шина узнаёт повтор и вернёт прежнюю квитанцию.
+ */
+function commandIdFor(updateId: string, step: string): string {
+  const digest = createHash('sha256').update(`telegram:${updateId}:${step}`, 'utf8').digest();
+  const bytes = Buffer.from(digest.subarray(0, 16));
+  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
+  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
+  const hex = bytes.toString('hex');
+  return [
+    hex.slice(0, 8),
+    hex.slice(8, 12),
+    hex.slice(12, 16),
+    hex.slice(16, 20),
+    hex.slice(20, 32),
+  ].join('-');
+}
+
+/**
+ * Создание задания одной строкой.
+ *
+ * Обе команды идут через тот же `executeEnvelope`, что и Mini App: отдельного
+ * пути для бота быть не должно, иначе проверки контракта начнут действовать
+ * только на одном из них.
+ *
+ * Ключ повторения — локальная дата пользовательского дня, а не дата сервера:
+ * человек в Москве, создающий задание в час ночи, имеет в виду сегодняшний
+ * день по своей границе, а не по UTC.
+ */
+async function createQuestFromLine(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  line: string,
+): Promise<Reply> {
+  const parsed = parseNewQuest(line);
+  if (!parsed.ok) {
+    return { kind: 'new_usage', body: parsed.hint };
+  }
+
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  const profile = await client.query<{ timezone: string; day_boundary_minutes: number }>(
+    'SELECT timezone, day_boundary_minutes FROM user_profiles WHERE user_id = $1',
+    [userId],
+  );
+  const settings = profile.rows[0];
+  if (settings === undefined) {
+    throw new Error('У пользователя нет профиля');
+  }
+  const day = userDayAt(new Date(), settings.timezone, settings.day_boundary_minutes);
+
+  const envelope = (kind: string, step: string, payload: Record<string, unknown>) => ({
+    schema_version: 1,
+    command_id: commandIdFor(update.update_id, step),
+    device_id: commandIdFor(update.update_id, 'device'),
+    kind,
+    aggregate_id: null,
+    expected_version: null,
+    client_created_at: new Date().toISOString(),
+    depends_on_command_id: null,
+    payload,
+  });
+
+  const template = await executeEnvelope(
+    db,
+    userId,
+    envelope('create_quest_template', 'template', {
+      title: parsed.title,
+      normal_spec: parsed.spec,
+    }),
+  );
+  const templateId = template.result?.['template_id'];
+  if (typeof templateId !== 'string') {
+    return {
+      kind: 'new_failed',
+      body: 'Не получилось создать задание. Попробуйте ещё раз или напишите иначе.',
+    };
+  }
+
+  const occurrence = await executeEnvelope(
+    db,
+    userId,
+    envelope('materialize_occurrence', 'occurrence', {
+      template_id: templateId,
+      recurrence_key: day.localDate,
+      timezone: settings.timezone,
+    }),
+  );
+  if (occurrence.result === undefined) {
+    return {
+      kind: 'new_failed',
+      body: 'Задание создано, но не попало в сегодняшний день. Отправьте /today и посмотрите.',
+    };
+  }
+
+  return {
+    kind: 'new_created',
+    body: `Записал: ${parsed.title}. Отправьте /today, чтобы увидеть список с кнопками.`,
   };
 }
 
@@ -341,7 +458,7 @@ export async function processPendingUpdates(
           ? null
           : isButton
             ? await handleButtonPress(db, client, update, userId)
-            : await composeReply(client, update, userId);
+            : await composeReply(db, client, update, userId);
 
       if (reply !== null && target !== null) {
         await client.query(

@@ -87,3 +87,8 @@ GRANT SELECT, INSERT, UPDATE ON goals TO app_worker;
 GRANT SELECT, INSERT, UPDATE ON quest_templates TO app_worker;
 GRANT INSERT, UPDATE ON quest_occurrences TO app_worker;
 GRANT SELECT, INSERT, UPDATE ON activity_records TO app_worker;
+
+-- Создание задания из бота берёт часовой пояс и границу дня из профиля: ключ
+-- повторения — локальная дата пользователя, а не дата сервера. Право на чтение,
+-- снова без разрешающей политики: действует политика владельца строки.
+GRANT SELECT ON user_profiles TO app_worker;

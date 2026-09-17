@@ -360,3 +360,68 @@ describe('нажатие кнопки', () => {
     expect(reply?.body).toContain('/today');
   });
 });
+
+describe('создание задания из бота', () => {
+  it('замыкает цикл: создал, увидел, нажал, записалось', async () => {
+    await deliver('/new Английский 30м');
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+
+    const created = await lastOutbound('new_created');
+    expect(created?.body).toContain('Английский');
+
+    // Задание видно в списке, и у него есть кнопка.
+    await deliver('/today');
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+    const today = await lastOutbound('today');
+    expect(today?.body).toContain('Английский');
+
+    const found = await ownerDb.query<{ id: string }>(
+      `SELECT o.id FROM quest_occurrences o
+        WHERE o.user_id = $1 AND o.template_snapshot->>'title' = 'Английский'`,
+      [userId],
+    );
+    const occurrenceId = found.rows[0]?.id as string;
+    const token = (today?.reply_markup?.inline_keyboard ?? [])
+      .flat()
+      .map((button) => button.callback_data);
+    const stored = await ownerDb.query<{ token: string }>(
+      'SELECT token FROM telegram_action_tokens WHERE occurrence_id = $1 ORDER BY created_at DESC LIMIT 1',
+      [occurrenceId],
+    );
+    expect(token).toContain(stored.rows[0]?.token);
+
+    await press(stored.rows[0]?.token as string);
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+
+    expect((await occurrenceState(occurrenceId)).execution_status).toBe('completed');
+  });
+
+  it('неразобранная строка получает пример, а не «ошибка»', async () => {
+    await deliver('/new Английский');
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+
+    const reply = await lastOutbound('new_usage');
+    // «Неверный формат» без образца ничему не учит.
+    expect(reply?.body).toContain('/new Английский 30м');
+  });
+
+  it('повторный разбор того же обновления не создаёт второго задания', async () => {
+    const updateId = await deliver('/new Бег 5км');
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+
+    // Так выглядит падение процесса между командой и пометкой: обновление
+    // возвращается в работу.
+    await ownerDb.query('UPDATE telegram_updates SET processed_at = NULL WHERE update_id = $1', [
+      updateId,
+    ]);
+    await processPendingUpdates(workerDb, { allowedUserIds: [OWNER] });
+
+    const created = await ownerDb.query(
+      `SELECT id FROM quest_occurrences
+        WHERE user_id = $1 AND template_snapshot->>'title' = 'Бег'`,
+      [userId],
+    );
+    // Идентификатор команды выведен из обновления, поэтому шина узнаёт повтор.
+    expect(created.rowCount).toBe(1);
+  });
+});
