@@ -3,6 +3,7 @@ import Fastify, { type FastifyInstance } from 'fastify';
 import type { AppConfig } from './config.ts';
 import { registerIdentityRoutes } from './modules/identity/routes.ts';
 import { registerSyncReadRoutes } from './modules/sync/reads.ts';
+import { registerTelegramWebhook } from './modules/telegram/webhook.ts';
 import { registerCommandRoutes } from './modules/sync/routes.ts';
 import { registerAuth } from './shared/auth/require-auth.ts';
 import { checkConnection, type Database } from './shared/db/pool.ts';
@@ -29,6 +30,7 @@ export const API_ROUTES = [
   { method: 'post', path: '/auth/logout' },
   { method: 'get', path: '/me' },
   { method: 'post', path: '/commands' },
+  { method: 'post', path: '/telegram/webhook' },
   { method: 'post', path: '/sync/push' },
   { method: 'get', path: '/bootstrap' },
   { method: 'get', path: '/sync/pull' },
@@ -81,6 +83,7 @@ export function createApp(deps: AppDependencies): FastifyInstance {
   registerIdentityRoutes(app, deps.config, deps.database);
   registerCommandRoutes(app, deps.database);
   registerSyncReadRoutes(app, deps.database);
+  registerTelegramWebhook(app, deps.config.telegram, deps.database);
 
   // Liveness: процесс жив и отвечает. Намеренно не трогает БД — иначе рестарт
   // приложения зависит от доступности базы и перезапуск лечит не то.

@@ -475,6 +475,91 @@ paths:
               schema:
                 $ref: '#/components/schemas/Error'
 
+  /telegram/webhook:
+    post:
+      summary: Приём обновлений Telegram
+      description: |
+        Отдельная граница доверия: сюда стучится не клиент приложения, а
+        Telegram, и access-токена здесь нет. Происхождение подтверждает секрет
+        в заголовке `X-Telegram-Bot-Api-Secret-Token`. Это **не** токен бота, и
+        сам по себе он не даёт права что-либо менять.
+
+        Обновление сохраняется **до** ответа. Telegram не повторяет то, что мы
+        подтвердили успехом, поэтому ответ «принято» за несохранённое
+        обновление теряет его навсегда. При недоступной базе маршрут отвечает
+        ошибкой, а не 200.
+
+        Дедупликация по паре «бот + `update_id`»: Telegram повторяет доставку
+        при обрыве связи, и без этого одно нажатие кнопки сработало бы дважды.
+        Повтор подтверждается так же, как первая доставка, и помечается полем
+        `duplicate`.
+
+        Отправитель берётся только из подписанного `from`. `chat.id` его не
+        заменяет, `forward_from` — тоже: пересланное содержимое это данные, а не
+        полномочия его автора.
+
+        Схема тела закрыта лишь по тому, на что мы опираемся: обязателен
+        `update_id`. Полностью закрытая схема отвергала бы обновления с полями,
+        которые Telegram добавит завтра, то есть теряла бы сообщения ради
+        формальной строгости. Незнакомый вид обновления сохраняется с пустым
+        `kind`.
+
+        Здесь обновление только принимается. Разбор, сопоставление отправителя с
+        аккаунтом и ответы выполняет фоновый обработчик: внешний вызов внутри
+        приёма упёрся бы в таймаут Telegram.
+
+        Без настроенного секрета маршрут отвечает 404.
+      operationId: receiveTelegramUpdate
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [update_id]
+              properties:
+                update_id:
+                  type: integer
+                  minimum: 0
+      responses:
+        '200':
+          description: Обновление сохранено (или уже было сохранено раньше)
+          content:
+            application/json:
+              schema:
+                type: object
+                additionalProperties: false
+                required: [ok, duplicate]
+                properties:
+                  ok:
+                    const: true
+                  duplicate:
+                    type: boolean
+        '400':
+          description: Тело без `update_id` или не разбирается
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '401':
+          description: Секрет не предъявлен или не совпал
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          description: Приём обновлений не настроен
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '413':
+          description: Тело больше допустимого
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+
   /bootstrap:
     get:
       summary: Начальный снимок состояния

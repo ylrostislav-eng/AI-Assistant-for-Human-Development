@@ -42,6 +42,7 @@ beforeAll(async () => {
     ...base,
     telegram: {
       botToken: BOT_TOKEN,
+      webhookSecret: null,
       allowedUserIds: [OWNER_ID, SECOND_ID],
       maxAgeSeconds: 300,
       futureSkewSeconds: 30,

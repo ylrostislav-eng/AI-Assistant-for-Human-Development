@@ -24,6 +24,13 @@ export interface ServerConfig {
 export interface TelegramConfig {
   readonly botToken: string | null;
   /**
+   * Секрет вебхука. Это **не** токен бота: Telegram присылает его заголовком
+   * `X-Telegram-Bot-Api-Secret-Token`, и он подтверждает только происхождение
+   * запроса. Без него маршрут не существует — включать приём наполовину
+   * нельзя.
+   */
+  readonly webhookSecret: string | null;
+  /**
    * Личный пилот принимает только перечисленных (docs/14, раздел 2). Пустой
    * список означает «никого»: доступ закрыт по умолчанию.
    */
@@ -108,8 +115,11 @@ function readAllowedUserIds(env: NodeJS.ProcessEnv): readonly string[] {
 
 function readTelegram(env: NodeJS.ProcessEnv): TelegramConfig {
   const token = env['TELEGRAM_BOT_TOKEN'];
+  const webhookSecret = env['TELEGRAM_WEBHOOK_SECRET'];
   return {
     botToken: token === undefined || token.trim() === '' ? null : token.trim(),
+    webhookSecret:
+      webhookSecret === undefined || webhookSecret.trim() === '' ? null : webhookSecret.trim(),
     allowedUserIds: readAllowedUserIds(env),
     // Срок жизни доказательства: подпись не делает украденную строку
     // безопасной, и окно кражи сужает только он (docs/14, раздел 3).

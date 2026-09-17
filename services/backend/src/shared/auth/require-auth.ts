@@ -25,6 +25,9 @@ export const PUBLIC_PATHS: readonly string[] = [
   // Вход по определению выполняется без access-токена.
   '/auth/dev-login',
   '/auth/telegram',
+  // Вебхук Telegram — своя граница доверия: он подтверждает происхождение
+  // секретом в заголовке, а не access-токеном (docs/14, раздел 4).
+  '/telegram/webhook',
   // Обновление предъявляет refresh-токен в теле запроса, а не access.
   '/auth/refresh',
 ];
