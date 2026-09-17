@@ -1,5 +1,6 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { randomUUID } from 'node:crypto';
 
+import { derivedCommandId } from '../../shared/commands/derived-id.ts';
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
 import { userDayAt } from '../../shared/time/user-day.ts';
@@ -220,20 +221,12 @@ async function composeReply(
  * если внешняя (та, что помечает обновление разобранным) упадёт после неё,
  * обновление разберётся второй раз. Со случайным идентификатором это создало бы
  * второе задание; с выведенным шина узнаёт повтор и вернёт прежнюю квитанцию.
+ *
+ * Вывод общий с ходом ИИ: две копии одного правила разъехались бы незаметно, а
+ * повод у них один и тот же — внешний источник, который повторяет доставку.
  */
 function commandIdFor(updateId: string, step: string): string {
-  const digest = createHash('sha256').update(`telegram:${updateId}:${step}`, 'utf8').digest();
-  const bytes = Buffer.from(digest.subarray(0, 16));
-  bytes[6] = ((bytes[6] ?? 0) & 0x0f) | 0x40;
-  bytes[8] = ((bytes[8] ?? 0) & 0x3f) | 0x80;
-  const hex = bytes.toString('hex');
-  return [
-    hex.slice(0, 8),
-    hex.slice(8, 12),
-    hex.slice(12, 16),
-    hex.slice(16, 20),
-    hex.slice(20, 32),
-  ].join('-');
+  return derivedCommandId('telegram', updateId, step);
 }
 
 /**

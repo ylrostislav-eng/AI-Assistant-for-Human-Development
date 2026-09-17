@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/tools/get_today_quests.tool.schema.json",
+  "title": "GetTodayQuestsArgumentsDraftV1",
+  "description": "Сегодняшние задания по серверному состоянию. Аргументов нет: пользователь, часовой пояс и граница дня берутся из сессии, а не из предложения модели.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {},
+  "required": []
+}

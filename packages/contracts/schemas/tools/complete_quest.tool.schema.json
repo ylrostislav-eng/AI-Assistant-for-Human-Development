@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/tools/complete_quest.tool.schema.json",
+  "title": "CompleteQuestArgumentsDraftV1",
+  "description": "Отметить выполнение задания. Задание называется ссылкой, выданной сервером при чтении в этом же ходе, а не идентификатором: идентификатор модель способна выдумать, а ссылку — нет.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "quest_ref": { "type": "string", "pattern": "^q[0-9]{1,3}$" },
+    "variant": { "enum": ["normal", "minimum", null] },
+    "actual_duration_seconds": { "type": ["integer", "null"], "minimum": 0, "maximum": 86400 },
+    "actual_amount": { "type": ["number", "null"], "minimum": 0, "maximum": 1000000 }
+  },
+  "required": ["quest_ref", "variant", "actual_duration_seconds", "actual_amount"]
+}

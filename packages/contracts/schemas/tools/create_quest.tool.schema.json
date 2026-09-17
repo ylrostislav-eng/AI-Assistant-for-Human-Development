@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/tools/create_quest.tool.schema.json",
+  "title": "CreateQuestArgumentsDraftV1",
+  "description": "Создать задание на сегодняшний пользовательский день. Необязательные поля объявлены nullable, а не пропускаемыми: strict-режим провайдера требует перечислить все поля в required, и пропуск поля там означает отказ, а не значение по умолчанию.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "success_rule": { "enum": ["duration", "amount"] },
+    "unit": { "type": "string", "minLength": 1, "maxLength": 20 },
+    "duration_seconds": { "type": ["integer", "null"], "minimum": 1, "maximum": 86400 },
+    "amount": { "type": ["number", "null"], "exclusiveMinimum": 0, "maximum": 1000000 }
+  },
+  "required": ["title", "success_rule", "unit", "duration_seconds", "amount"],
+  "allOf": [
+    {
+      "if": { "properties": { "success_rule": { "const": "duration" } }, "required": ["success_rule"] },
+      "then": { "properties": { "duration_seconds": { "type": "integer" } } }
+    },
+    {
+      "if": { "properties": { "success_rule": { "const": "amount" } }, "required": ["success_rule"] },
+      "then": { "properties": { "amount": { "type": "number" } } }
+    }
+  ]
+}
