@@ -1,10 +1,10 @@
 # 10. План разработки Telegram-системы
 
-Актуально: 2026-09-16. Этот план заменяет прежнюю последовательность iOS. Исторические таблицы сохранены в [архиве](archive/pre-telegram-2026-09-16.txt); их незакрытые Mac-гейты не блокируют Telegram. Статус кода — [13](13-handoff.md), требования платформы — [14](14-telegram-platform.md), исправления — [15](15-backend-review.md).
+Актуально: 2026-09-17. Этот план заменяет прежнюю последовательность iOS. Исторические таблицы сохранены в [архиве](archive/pre-telegram-2026-09-16.txt); их незакрытые Mac-гейты не блокируют Telegram. Статус кода — [13](13-handoff.md), требования платформы — [14](14-telegram-platform.md), исправления — [15](15-backend-review.md).
 
 ## 1. Как исполнять
 
-Каждая строка — самостоятельная задача, не объявление готовности. Сначала зависимость и meaningful regression test, затем реализация и проверка. Одна фаза готова только после её exit gate. API/worker сохраняются; не пересоздавать проект. Текущий запрос пользователя закрывается аудитом и документацией; следующие задачи реализации выполняются по поручению.
+Каждая строка — самостоятельная задача, не объявление готовности. Сначала зависимость и meaningful regression test, затем реализация и проверка. Одна фаза готова только после её exit gate. API/worker сохраняются; не пересоздавать проект. При поручении продолжить разработку брать ограниченную следующую задачу из handoff; завершённый документационный аудит не блокирует реализацию.
 
 План различает: **технический demo**, **ручное ядро**, **полный продуктовый MVP**, **публичный релиз**. Наличие webhook и кнопки completion не доказывает полный цикл Системы.
 
@@ -28,11 +28,11 @@ T-04 hosting можно подготовить раньше для synthetic dev
 | Прежний ID | Фактический результат | Что осталось |
 |---|---|---|
 | P0-00, P0-01a/b | Архитектура, окружение, backend pins, smoke | Native build снят для пилота; web toolchain ещё проверить |
-| P0-04 | Threat model, RLS и sessions prototypes, secret scan | Telegram trust boundaries и фактический deploy |
-| P1-01 | Миграции 001–008, схемы envelope, OpenAPI фактических routes | Закрытые payload schemas/DTO, новые domain tables по задачам |
-| P1-02 | Synthetic dev login, access/refresh/revoke | Реальный Telegram login T-01; Apple proof больше не пилотный gate |
-| P1-03 | CommandBus, receipts, batches, outbox/jobs/worker | T-00a/b; bootstrap/pull; handlers reminders/day-close |
-| P1-06 | Template/occurrence команды, state transitions | ActivityRecord/объём/Undo, schemas, ручной UX; не весь P1-06 |
+| P0-04 | Threat model, RLS, sessions, secret scan, Telegram trust boundary; API/worker Railway | Дальнейшее operational hardening и public gate |
+| P1-01 | Миграции 001–018, closed payload schemas, OpenAPI фактических routes | Новые domain tables по задачам, progression ledger отсутствует |
+| P1-02 | Dev login, Telegram initData auth/allowlist/replay, access/refresh/revoke | Installation binding и device smoke Mini App |
+| P1-03 | CommandBus, receipts, batches, outbox/jobs/worker; T-00a/b и bootstrap/pull | Handlers reminders/day-close, bounded domain reads |
+| P1-06 | Template/occurrence команды, state transitions, ActivityRecord/объём/исправление | Timer/Undo и полный ручной UX; не весь P1-06 |
 | P1-07 | CalendarMath/ensureUserDay | T-00c/d, Scheduler, reminders, закрытие дня; не весь P1-07 |
 | P1-04 | Клиентская реализация отсутствует | Сохранён: IndexedDB journal вместо Swift SQLite, T-03 |
 | P1-08 | Клиента нет | Перенесён в web UI, T-03 и последующие экраны |
@@ -47,7 +47,7 @@ T-04 hosting можно подготовить раньше для synthetic dev
 | T-00d ✔ | `modules/scheduling/user-days`, миграция 011 | Смена boundary/timezone применяется в определённый момент; существующий интервал не раздваивается; concurrent changes; один credited bucket |
 | T-00e ✔ | `app.ts`, `worker.ts`, `shared/logging`, error translation, log tests | Raw PG/provider errors не раскрывают payload/credentials; инфраструктурная ошибка refresh не маскируется под неверный token |
 
-**T-00a–e выполнены** (коммиты `453cf3f`, `a2b2345`, `25146a0`, `9b4c5d8`, `caa24d1`, `e15c349`, `a1e3903`; миграции 009–011). Подробности и отрицательные контроли — в [handoff](13-handoff.md), раздел 3. Это не значит, что сервер готов: остаётся Activity-часть R6 (P1-06), а Telegram-клиента, чтения и ledger нет вовсе. Старые миграции не переписывались; политика для прежних квитанций (`hash_version = 1`) — явный отказ, а не догадка.
+**T-00a–e выполнены** (коммиты `453cf3f`, `a2b2345`, `25146a0`, `9b4c5d8`, `caa24d1`, `e15c349`, `a1e3903`; миграции 009–011). Подробности и отрицательные контроли — в [handoff](13-handoff.md), раздел 3. Activity-часть R6 также закрыта миграцией 012; Telegram auth, бот и bootstrap/pull реализованы. Mini App и progression ledger отсутствуют. Старые миграции не переписывались; политика для прежних квитанций (`hash_version = 1`) — явный отказ, а не догадка.
 
 > Следующая задача по порядку аудита — Telegram foundation (T-01, затем T-06), а Activity path закрывается до реального дневного учёта. T-01 требует токена тестового бота от владельца.
 
@@ -79,10 +79,25 @@ Exit: Goal → scheduled quest → сохранённая Activity; ручной
 
 ## 6. Phase 2 — текстовая Система
 
+Для уже работающего бота выделена последовательность небольших срезов.
+Обозначения T-04a/b исторически закреплены за ИИ; они не означают завершение
+всех работ T-04 по hosting или всех задач Phase 2.
+
+| ID | Статус и scope | Критерий завершения |
+|---|---|---|
+| T-04a ✔ | Каталог, ToolGateway, runTurn, prompt `coach-1` | Закрытые схемы, ссылки/версии, пределы; DB tests и отрицательные контроли пройдены |
+| T-04b-1 ✔ | HTTP `openai-chat` / `anthropic-messages`, bounded fallback | Wire round-trip, errors/time/bytes, tool results между провайдерами; mocked HTTP, runTurn smoke, отрицательные контроли. Runtime/live wiring не входит |
+| T-04b-2 **следующая** | Versioned outbound privacy policy для system/user/tool context | Явный allowlist, health/raw notes/реальные имена не уходят, разрешённые факты обезличиваются; проверка каждого раунда и fallback, deny-by-default для непроверенного содержимого; негативные fixtures и снятие защиты |
+| T-04b-3 | Durable turns/tool results + бюджет каждой provider attempt | Один turn на update ID, RLS, lease/fencing, восстановление после commit→crash без нового эффекта; receipts доступны при отказе модели, суммы лимитов атомарны, неизвестная стоимость не считается нулём |
+| T-04b-4 | Runtime config, свободный текст бота, bounded live acceptance | Base/protocol/model/key из secret/config, первичная/резервная модели явно выбраны; synthetic live tool cycle, отказ/timeout/лимит; `/new`, `/today`, кнопки работают без AI; policy и durable budget из предыдущих срезов обязательны |
+
+T-04b в целом пока **не выполнена**. Только после её приёмки расширять AI
+до интервью цели, PlanDiff, памяти и полноценного ContextBuilder из таблицы ниже.
+
 | ID | Scope | Зависимости | Критерий |
 |---|---|---|---|
 | P0-03 | Bounded real provider spike, model IDs/budget/cost report | Рабочий backend; настроенный ключ | Русский ввод, strict tools, refusal/429/timeout/usage; версия SDK проверена |
-| P2-01 | AIProvider/OpenAI adapter, turn lifecycle/SSE для Mini App | P0-03, Phase 1 | Streaming/reconnect/cancel; бот получает bounded result, не поток каждого token |
+| P2-01 ◑ | HTTP adapters готовы в T-04b-1; durable lifecycle/SSE для Mini App — нет | P0-03, Phase 1 | Streaming/reconnect/cancel; бот получает bounded result, не поток каждого token |
 | P2-02 | ContextBuilder, read tools, factual cards, единая дата/зона | P2-01 | Relevant-only, two tenants, timestamps и цифры grounded |
 | P2-03 | ToolGateway/policy/proposals/PlanDiff, Telegram adapter | P2-02, T-00a | Все writes через CommandBus; prompt injection/XP bypass/stale proposal/duplicate tool заблокированы |
 | P2-04 | Goal interview/GoalPlanDraft, classifier/dynamic skills/rubrics | P2-03, P1-07 | Из понятной цели принят посильный roadmap, duplicate skill не создаётся |
@@ -155,6 +170,6 @@ Fixtures: два tenants, два клиента одного пользоват�
 
 ## 12. Первый запрос следующей модели
 
-> Прочитай AGENTS.md, docs/13-handoff.md, docs/15-backend-review.md и спецификации 02/06. Выполни T-00a: исправь нормализацию и валидацию команд, hash семантики и проверку top-level expected_version/aggregate_id. Сначала добавь regression tests R1/R2/R6, затем исправь код и контракты без переписывания старых миграций. Учти уже выданные receipts и отсутствующую регистрацию devices; не заявляй, что T-01 уже реализован. Проверь typecheck/unit/contracts и affected DB integration на отдельной synthetic DB. Обнови handoff; остальные T-00 не отмечай готовыми.
+> Прочитай AGENTS.md, docs/13-handoff.md (включая 6.1), docs/00-product-and-decisions.md и docs/05-ai-system.md. Выполни T-04b-2: версионированную политику исходящих данных перед каждым вызовом модели, включая tool results и fallback. Не считай выбор JSON-полей или prompt инструкцию обезличиванием текста. Начни с fixtures на запрещённые поля/health/raw notes/реальные имена и разрешённые обезличенные данные; затем реализация и отрицательные контроли. Не подключай свободный текст бота до durable turns и бюджета T-04b-3. Сохрани ручные команды и существующий ToolGateway, проверь typecheck/unit/contracts и затронутые DB integration на synthetic DB; запиши точные результаты и оставшиеся ограничения в handoff.
 
 Сроки не обещаются по количеству таблиц: полезную первую вертикаль выпускаем отдельно от полного MVP, затем измеряем фактическую скорость. Mac больше не входит в критический путь Telegram.

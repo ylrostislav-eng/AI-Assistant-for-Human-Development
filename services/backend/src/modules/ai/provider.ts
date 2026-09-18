@@ -35,6 +35,8 @@ export interface AiTurnRequest {
 export interface AiTurnResponse {
   readonly text: string;
   readonly toolCalls: readonly ToolCall[];
+  /** Input includes cached tokens. Counts are not prices or a spending limit. */
+  readonly usage?: { readonly inputTokens: number; readonly outputTokens: number };
 }
 
 export interface AiProvider {
