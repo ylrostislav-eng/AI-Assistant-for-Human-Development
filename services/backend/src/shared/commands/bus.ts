@@ -71,6 +71,48 @@ export interface CommandReceipt {
 
 export class PayloadMismatchError extends Error {}
 
+/** Trusted server context, never a field of the public command envelope. */
+export interface CommandTurnFence {
+  readonly id: string;
+  readonly token: string;
+  readonly revision: string;
+  readonly intent?: { readonly step: string; readonly hash: string };
+}
+export class LostTurnLeaseError extends Error {
+  readonly code = 'lost_turn_lease';
+  constructor() { super('AI command turn lease lost'); this.name = 'LostTurnLeaseError'; }
+}
+export async function lockTurnFence(client: TransactionClient, userId: string, fence: CommandTurnFence): Promise<void> {
+  const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+  if (!uuid.test(fence.id) || !uuid.test(fence.token)
+    || !/^[1-9][0-9]{0,18}$/.test(fence.revision) || BigInt(fence.revision) > 9223372036854775807n) {
+    throw new LostTurnLeaseError();
+  }
+  // Lock separately: evaluate expiry AFTER waiting, using the database clock.
+  // Order is user counter -> turn. No provider request may run under these locks.
+  await client.query('SELECT id FROM ai_turns WHERE user_id = $1 AND id = $2 FOR UPDATE', [userId, fence.id]);
+  const valid = await client.query(
+    `SELECT id FROM ai_turns WHERE user_id = $1 AND id = $2 AND status = 'running'
+     AND lease_token = $3 AND revision = $4 AND lease_expires_at > clock_timestamp()`,
+    [userId, fence.id, fence.token, fence.revision],
+  );
+  if (valid.rowCount !== 1) throw new LostTurnLeaseError();
+}
+
+export class CommandIntentMismatchError extends Error {
+  readonly code = 'intent_mismatch';
+  constructor() { super('AI command does not match prepared intent'); this.name = 'CommandIntentMismatchError'; }
+}
+async function assertCommandIntent(client: TransactionClient, request: CommandRequest, fence: CommandTurnFence): Promise<void> {
+  if (fence.intent === undefined) return;
+  const match = await client.query(
+    `SELECT step FROM ai_command_intents WHERE user_id = $1 AND turn_id = $2 AND step = $3
+     AND intent_hash = $4 AND command_id = $5 AND command_hash = $6 AND hash_version = $7`,
+    [request.userId, fence.id, fence.intent.step, fence.intent.hash, request.commandId, semanticHash(request), SEMANTIC_HASH_VERSION],
+  );
+  if (match.rowCount !== 1) throw new CommandIntentMismatchError();
+}
+
 /** Внутренний сигнал отката при обнаружении повтора. */
 class DuplicateCommandSignal extends Error {}
 
@@ -171,6 +213,7 @@ export async function executeCommand(
   db: Database,
   request: CommandRequest,
   handler: CommandHandler,
+  turnFence?: CommandTurnFence,
 ): Promise<CommandReceipt> {
   const hash = semanticHash(request);
 
@@ -189,6 +232,11 @@ export async function executeCommand(
       if (seq === undefined) {
         throw new Error('Счётчик изменений не выдал номер');
       }
+
+      // Fenced tools must own the turn even when returning an existing receipt.
+      // The row lock lasts through the domain handler, ledger and receipt commit.
+      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);
+      if (turnFence !== undefined) await assertCommandIntent(client, request, turnFence);
 
       // Шаг 2: повтор?
       const existing = await client.query<{ command_id: string }>(

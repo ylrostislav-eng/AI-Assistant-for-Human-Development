@@ -156,3 +156,44 @@ Fallback — явно настроенная цепочка максимум и�
 повторно и не означает разрешения передавать данные любому новому поставщику.
 Пока не готовы политика исходящих данных, сохранение ходов и резервирование
 бюджета, транспорт не подключается к входящим сообщениям бота.
+
+
+| Решение | Принято 2026-09-18 | Обоснование |
+|---|---|---|
+| ADR-019 | Provider failure завершает текущий runTurn структурированным результатом с прежними квитанциями и пустым draft | Committed команда остаётся фактом даже при отказе следующего запроса. Автоматически повторять весь ход нельзя; durable resume — отдельный T-04b-3b |
+
+ADR-019 реализован в T-04b-3a. `provider_error` не означает, что ни одна
+команда не выполнена, и не доказывает неисправность внешнего поставщика:
+ошибка может происходить при проверке исходящих данных. UI показывает
+квитанции отдельно и предлагает `/today`; raw exception в результат не входит.
+Ошибки CommandBus/ToolGateway не маскируются как provider error.
+
+| Решение | Принято 2026-09-18 | Обоснование |
+|---|---|---|
+| ADR-020 | PostgreSQL turn storage сохраняет origin/input identity и versioned opaque checkpoint; все записи требуют live lease + revision | Process memory не хранит ход между исполнителями. Atomic claim и row-lock validation блокируют устаревшие записи; command execution требует отдельного fencing в CommandBus transaction |
+
+ADR-020 реализован в T-04b-3b1 как storage foundation. Snapshot — private data,
+не AI outbound context; worker имеет tenant RLS без глобального bypass.
+Max attempts persisted, terminal result не открывается повторно. Бот пока
+использует прежний in-memory `runTurn`; storage API не доказывает command resume.
+
+| Решение | Принято 2026-09-18 | Обоснование |
+|---|---|---|
+| ADR-021 | Trusted turn fence проверяется внутри CommandBus transaction после user counter и turn row locks, до receipt/handler | Отдельная проверка до исполнения оставляет окно для takeover. Row lock удерживается до commit и сериализует команду с новым claim; manual callers сохраняют прежний API |
+
+ADR-021 реализован в T-04b-3b2a. Lease validation не является intent validation:
+prepared envelopes и durable gateway/bot wiring остаются отдельными задачами.
+
+| Решение | Принято 2026-09-18 | Обоснование |
+|---|---|---|
+| ADR-022 | Prepared команды append-only в PostgreSQL; CommandBus сверяет turn/step/digest/command ID/semantic hash в своей транзакции; occurrence создаётся из snapshot шаблона и его committed receipt | После crash нельзя заново строить тот же шаг по новым часам, настройкам или версии объекта. Неизменяемый документ и main call identity защищают смысл, прежняя receipt защищает повтор эффекта |
+
+ADR-022 реализован в T-04b-3b2b, миграция 021. Новый API пока не подключён
+к gateway/bot: durable transcript, read refs/counters и resume требуют T-04b-3b3.
+
+| Решение | Принято 2026-09-18 | Обоснование |
+|---|---|---|
+| ADR-023 | Durable core сохраняет typed transcript/gateway checkpoint; резервирует local round до provider HTTP и сохраняет assistant до tools; restart продолжает pending cursor с прежними intents | Потеря process memory не должна менять предложение, ссылки или лимиты. Save после HTTP повторно проверяет lease; mutations передают command fence. Terminal replay возвращает result без модели |
+
+ADR-023 реализован в T-04b-3b3a, checkpoint durable-turn-1. Telegram adapter,
+обработка exhaustion и monetary/fallback budget остаются отдельными задачами.

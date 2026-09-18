@@ -1,8 +1,11 @@
 #!/usr/bin/env python3
-"""Negative controls for T-04b (synthetic HTTP, no DB or external requests).
+"""Negative controls for AI/Telegram/progression. No external provider requests.
+
+Integration controls require an explicit DATABASE_URL to a disposable local DB;
+those suites reset its schema. Unit-only index ranges do not need a database.
 
 Run without simultaneous edits/tests of the touched sources: temporarily mutates
-http.ts, routing.ts or config.ts and restores all of them in finally. Optional positional bounds select [start, stop).
+the selected source and restores all touched sources in finally. Optional positional bounds select [start, stop).
 Detailed reports go to a unique temporary directory. Needs installed npm deps.
 """
 from pathlib import Path
@@ -27,6 +30,22 @@ LEDGER_TESTS = 'tests/integration/xp-ledger.test.ts'
 CLOSE_TESTS = 'tests/integration/day-close.test.ts'
 PROGRESS_TESTS = 'tests/integration/telegram-progress.test.ts'
 LEVELS = 'services/backend/src/modules/progression/levels.ts'
+TURN = 'services/backend/src/modules/ai/turn.ts'
+TURN_TESTS = 'tests/unit/ai-turn.test.ts'
+TURN_STORE = 'services/backend/src/modules/ai/turn-store.ts'
+TURN_STORE_SQL = 'services/backend/db/migrations/020_ai_turn_store.sql'
+STORE_TESTS = 'tests/integration/ai-turn-store.test.ts'
+BUS = 'services/backend/src/shared/commands/bus.ts'
+SYNC = 'services/backend/src/modules/sync/routes.ts'
+FENCE_TESTS = 'tests/integration/ai-command-fence.test.ts'
+INTENTS = 'services/backend/src/modules/ai/command-intents.ts'
+INTENTS_SQL = 'services/backend/db/migrations/021_ai_command_intents.sql'
+INTENT_TESTS = 'tests/integration/ai-command-intents.test.ts'
+DURABLE = 'services/backend/src/modules/ai/durable-turn.ts'
+DURABLE_TESTS = 'tests/integration/ai-durable-turn.test.ts'
+GATEWAY = 'services/backend/src/modules/ai/gateway.ts'
+GATEWAY_STATE = 'services/backend/src/modules/ai/gateway-state.ts'
+STATE_TESTS = 'tests/unit/ai-gateway-state.test.ts'
 EGRESS = 'services/backend/src/modules/ai/egress.ts'
 EGRESS_TESTS = 'tests/unit/ai-egress.test.ts'
 DAY_CLOSE = 'services/backend/src/modules/scheduling/day-close.ts'
@@ -36,7 +55,7 @@ QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS, EGRESS)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS, EGRESS, TURN, TURN_STORE, TURN_STORE_SQL, BUS, SYNC, INTENTS, INTENTS_SQL, DURABLE, GATEWAY, GATEWAY_STATE)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -170,6 +189,135 @@ add('egress system prompt', 'чужая системная подсказка', 
 add('egress unparsable', 'нечитаемый результат инструмента', "    throw new EgressPolicyError(`результат инструмента ${message.name} не разбирается`);", '    return;', EGRESS, EGRESS_TESTS)
 add('egress error redaction', 'в сообщении об ошибке нет самого содержимого', "      throw new EgressPolicyError(`поле ${path === '' ? key : `${path}.${key}`} не разрешено`);", "      throw new EgressPolicyError(`поле ${key} со значением ${String(nested)} не разрешено`);", EGRESS, EGRESS_TESTS)
 add('egress at transport exit', 'политика исходящих', '      assertOutboundAllowed(request);', '      void assertOutboundAllowed;', HTTP, TRANSPORT_TESTS)
+
+# T-04b-3a: failure after commit must retain receipts without replay or drafts.
+add('provider recovery result', 'возвращает квитанции при отказе следующего раунда', "return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "throw new Error('removed recovery');", TURN, TURN_TESTS)
+add('committed receipts on failure', 'возвращает квитанции при отказе следующего раунда', "return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "return { text: '', receipts: [], failures, rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
+add('failed round draft removal', 'возвращает квитанции при отказе следующего раунда', "return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "return { text, receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
+add('previous tool failures retained', 'отказ модели сохраняет предыдущие отказы инструментов', "return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "return { text: '', receipts: options.gateway.receipts(), failures: [], rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
+add('failed request not counted as completed round', 'отказ первого раунда возвращает пустой результат', "return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "return { text: '', receipts: options.gateway.receipts(), failures, rounds: rounds + 1, stopReason: 'provider_error' };", TURN, TURN_TESTS)
+add('no turn retry after provider failure', 'отказ первого раунда возвращает пустой результат', "    } catch {\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "    } catch {\n      await options.provider.generateTurn(request).catch(() => undefined);\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
+add('gateway failures are not provider failures', 'ошибка исполнения инструмента не маскируется', '      const result = await options.gateway.invoke(call);', "      const result = await options.gateway.invoke(call).catch(() => ({ callId: call.id, name: call.name, status: 'rejected' as const, content: { error: 'masked' } }));", TURN, TURN_TESTS)
+add('Telegram displays committed receipt on outage', 'сохраняет подтверждение записи при отказе модели после commit', '  if (result.receipts.length > 0) {', '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
+add('Telegram distinguishes provider outage', 'сохраняет подтверждение записи при отказе модели после commit', "result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply'", "'ai_reply'", INBOX, 'tests/integration/telegram-ai.test.ts')
+add('provider outage is not round limit', 'сохраняет подтверждение записи при отказе модели после commit', "  if (result.stopReason === 'provider_error') {", '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
+
+# T-04b-3b1: durable storage, no tool execution or paid model calls.
+add('turn canonical semantic hash', 'replay preserves checkpoint', 'Object.getOwnPropertyNames(v).sort()', 'Object.getOwnPropertyNames(v)', TURN_STORE, STORE_TESTS)
+add('turn source uniqueness', 'rejects changed input', 'CONSTRAINT ai_turn_source_identity UNIQUE (user_id, channel, source_scope, source_request_id),', '', TURN_STORE_SQL, STORE_TESTS)
+add('turn input identity', 'rejects changed input', 'row.input_hash !== inputHash || ', '', TURN_STORE, STORE_TESTS)
+add('turn prompt compatibility', 'rejects changed input', 'row.prompt_version !== args.versions.prompt\n      || ', '', TURN_STORE, STORE_TESTS)
+add('turn policy compatibility', 'rejects changed input', 'row.policy_version !== args.versions.policy || ', '', TURN_STORE, STORE_TESTS)
+add('turn checkpoint compatibility', 'rejects changed input', 'row.checkpoint_version !== args.versions.checkpoint\n      || ', '', TURN_STORE, STORE_TESTS)
+add('turn identity reuse', 'rejects changed input', 'row.id !== args.id || ', '', TURN_STORE, STORE_TESTS)
+add('turn single executor', 'concurrent executors', "       AND (lease_expires_at IS NULL OR lease_expires_at <= clock_timestamp())\n", '', TURN_STORE, STORE_TESTS)
+add('turn lease fencing', 'old lease cannot', 'AND lease_token = $3 AND revision = $4', 'AND $3::uuid IS NOT NULL AND revision = $4', TURN_STORE, STORE_TESTS)
+add('turn revision fencing', 'same holder stale revision', 'AND lease_token = $3 AND revision = $4', 'AND lease_token = $3 AND $4::bigint > 0', TURN_STORE, STORE_TESTS)
+add('turn live lease fencing', 'expired lease cannot save', 'AND lease_expires_at > clock_timestamp()', '', TURN_STORE, STORE_TESTS)
+add('turn lock before expiry validation', 'lease expiry is checked after waiting', 'AND id = $2 FOR UPDATE', 'AND id = $2', TURN_STORE, STORE_TESTS)
+add('turn terminal status', 'renew advances revision', "AND status IN ('pending', 'running')", '', TURN_STORE, STORE_TESTS)
+add('turn attempt exhaustion result', 'expired attempts cannot exceed', '       AND attempts < max_attempts RETURNING *', '       RETURNING *', TURN_STORE, STORE_TESTS)
+add('turn bounded checkpoint bytes', 'invalid or oversized JSON', '  if (Buffer.byteLength(encoded) > maxBytes) invalid();', '', TURN_STORE, STORE_TESTS)
+add('turn finite JSON numbers', 'invalid or oversized JSON', 'if (!Number.isFinite(v)) invalid(); ', '', TURN_STORE, STORE_TESTS)
+add('turn valid JSONB text', 'JSONB-invalid text', "  if (value.includes('\\0')) invalid();", '', TURN_STORE, STORE_TESTS)
+add('turn no accessors', 'JSONB-invalid text', "      if (!descriptor || !('value' in descriptor) || !descriptor.enumerable) invalid();\n      return [key, canonical(descriptor.value, depth + 1)];", "      return [key, canonical((v as Record<string, unknown>)[key], depth + 1)];", TURN_STORE, STORE_TESTS)
+add('turn RLS no context', 'tenant isolation applies', "  USING (user_id = NULLIF(current_setting('app.user_id', true), '')::uuid)\n  WITH CHECK (user_id = NULLIF(current_setting('app.user_id', true), '')::uuid);", '  USING (true) WITH CHECK (true);', TURN_STORE_SQL, STORE_TESTS)
+add('turn account deletion cleanup', 'deleting the account', 'REFERENCES users(id) ON DELETE CASCADE', 'REFERENCES users(id)', TURN_STORE_SQL, STORE_TESTS)
+
+add('turn positive bounded limits', 'invalid or oversized JSON', '  if (!Number.isSafeInteger(value) || value <= 0 || value > max) invalid();', '', TURN_STORE, STORE_TESTS)
+add('turn object checkpoint', 'invalid or oversized JSON', "  if (value === null || typeof value !== 'object' || Array.isArray(value)) invalid();", '', TURN_STORE, STORE_TESTS)
+add('turn bounded nesting', 'invalid or oversized JSON', '    if (depth > 32 || ++nodes > 20_000) invalid();', '', TURN_STORE, STORE_TESTS)
+add('turn plain JSON objects', 'invalid or oversized JSON', "    if (typeof v !== 'object' || (Object.getPrototypeOf(v) !== Object.prototype && Object.getPrototypeOf(v) !== null)) invalid();", "    if (typeof v !== 'object') invalid();", TURN_STORE, STORE_TESTS)
+add('turn valid Unicode surrogate pairs', 'JSONB-invalid text.*surrogate', 'function jsonText(value: string): string {', 'function jsonText(value: string): string { return value;', TURN_STORE, STORE_TESTS)
+
+add('turn persisted attempt policy identity', 'rejects changed input', '      || row.max_attempts !== args.maxAttempts', '', TURN_STORE, STORE_TESTS)
+add('turn source channel identity', 'rejects changed input', 'row.channel !== args.source.channel\n      || ', '', TURN_STORE, STORE_TESTS)
+add('turn source scope identity', 'rejects changed input', 'row.source_scope !== args.source.scope || ', '', TURN_STORE, STORE_TESTS)
+
+add('turn arrays do not run accessors or drop fields', 'array serialization', "    if (Array.isArray(v)) {\n      if (v.length > 20_000 || Object.getPrototypeOf(v) !== Array.prototype\n        || Object.getOwnPropertySymbols(v).length !== 0 || Object.getOwnPropertyNames(v).length !== v.length + 1) invalid();\n      return Array.from({ length: v.length }, (_, index) => {\n        const item = Object.getOwnPropertyDescriptor(v, String(index));\n        if (!item || !('value' in item) || !item.enumerable) invalid();\n        return canonical(item.value, depth + 1);\n      });\n    }", '    if (Array.isArray(v)) return Array.from(v, (item) => canonical(item, depth + 1));', TURN_STORE, STORE_TESTS)
+
+add('command fence required before effects', 'expired lease rejects before effects', '      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);', '', BUS, FENCE_TESTS)
+add('command fence token', 'wrong token rejects', 'AND lease_token = $3 AND revision = $4', 'AND $3::uuid IS NOT NULL AND revision = $4', BUS, FENCE_TESTS)
+add('command fence revision', 'old revision rejects', 'AND lease_token = $3 AND revision = $4', 'AND lease_token = $3 AND $4::bigint IS NOT NULL', BUS, FENCE_TESTS)
+add('command fence expiry after user contention', 'expiry while waiting for user lock', 'AND lease_expires_at > clock_timestamp()', '', BUS, FENCE_TESTS)
+add('command fence holds turn lock', 'turn row stays locked', 'AND id = $2 FOR UPDATE', 'AND id = $2', BUS, FENCE_TESTS)
+add('envelope forwards trusted fence', 'envelope fencing blocks stale XP', 'executeCommand(database, command, handler, turnFence)', 'executeCommand(database, command, handler)', SYNC, FENCE_TESTS)
+add('command fence malformed revision safe error', 'missing turn and malformed lease', ' || BigInt(fence.revision) > 9223372036854775807n', '', BUS, FENCE_TESTS)
+cases.append(('command fence not a preflight', 'expiry while waiting for user lock', [
+    ('      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);', ''),
+    ('      await setUser(client, request.userId);', '      await setUser(client, request.userId);\n      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);'),
+], BUS, FENCE_TESTS))
+
+cases.append(('command fence checked after turn contention', 'expiry while waiting for turn lock', [
+    ("  await client.query('SELECT id FROM ai_turns WHERE user_id = $1 AND id = $2 FOR UPDATE', [userId, fence.id]);", ''),
+    ("  if (valid.rowCount !== 1) throw new LostTurnLeaseError();", "  await client.query('SELECT id FROM ai_turns WHERE user_id = $1 AND id = $2 FOR UPDATE', [userId, fence.id]);\n  if (valid.rowCount !== 1) throw new LostTurnLeaseError();"),
+], BUS, FENCE_TESTS))
+cases.append(('command fence also protects duplicate receipts', 'takeover fences previous owner', [
+    ('      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);', ''),
+    ('      const outcome = await handler', '      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);\n      const outcome = await handler'),
+], BUS, FENCE_TESTS))
+add('command fence rejects foreign lease', 'foreign tenant cannot fence', '      if (turnFence !== undefined) await lockTurnFence(client, request.userId, turnFence);', '', BUS, FENCE_TESTS)
+
+add('prepared payload identity before receipt', 'changed payload same step', 'stored.hash !== value.hash', 'false', INTENTS, INTENT_TESTS)
+add('prepared snapshot identity before receipt', 'changed valid snapshot same step', 'stored.hash !== value.hash', 'false', INTENTS, INTENT_TESTS)
+add('prepared closed snapshot input', 'closed validation rejects', '!validInput(copy) || ', '', INTENTS, INTENT_TESTS)
+add('prepared closed envelope', 'closed validation rejects', '!validEnvelope(copy.envelope) || ', '', INTENTS, INTENT_TESTS)
+add('prepared tool kind allowlist', 'closed validation rejects', "? 'occurrence' : invalid();", "? 'occurrence' : 'template';", INTENTS, INTENT_TESTS)
+add('prepared derived command ID', 'closed validation rejects', "copy.envelope.command_id !== derivedCommandId('ai', turnId, step)", 'false', INTENTS, INTENT_TESTS)
+add('prepared derived actor ID', 'closed validation rejects', "copy.envelope.device_id !== derivedCommandId('ai', turnId, 'device')", 'false', INTENTS, INTENT_TESTS)
+add('prepared day semantics', 'closed validation rejects', '|| userDayAt(new Date(snap.clock), snap.timezone, snap.dayBoundaryMinutes).localDate !== snap.localDate', '', INTENTS, INTENT_TESTS)
+add('prepared frozen instant', 'closed validation rejects', '|| copy.envelope.client_created_at !== snap.clock', '', INTENTS, INTENT_TESTS)
+add('prepared ref target', 'completion must match both identity', 'ref.occurrenceId !== command.targetId || ', '', INTENTS, INTENT_TESTS)
+add('prepared ref version', 'completion must match both identity', ' || ref.version !== command.expectedVersion', '', INTENTS, INTENT_TESTS)
+add('prepared transaction semantic hash', 'transaction rejects changed command before first receipt', 'AND command_hash = $6', 'AND $6::text IS NOT NULL', BUS, INTENT_TESTS)
+add('prepared transaction digest', 'transaction rejects missing intent wrong digest', 'AND intent_hash = $4', 'AND $4::text IS NOT NULL', BUS, INTENT_TESTS)
+add('prepared transaction command ID', 'transaction rejects missing intent wrong digest', 'AND command_id = $5', 'AND $5::uuid IS NOT NULL', BUS, INTENT_TESTS)
+add('prepared transaction step', 'transaction rejects missing intent wrong digest', 'AND step = $3', 'AND $3::text IS NOT NULL', BUS, INTENT_TESTS)
+add('prepared transaction effect guard', 'intent check occurs after user lock', '      if (turnFence !== undefined) await assertCommandIntent(client, request, turnFence);', '', BUS, INTENT_TESTS)
+add('prepared RLS owner policy', 'both app roles cannot update', "user_id = NULLIF(current_setting('app.user_id', true), '')::uuid", 'true', INTENTS_SQL, INTENT_TESTS)
+add('prepared append-only update permission', 'both app roles cannot update', 'GRANT SELECT, INSERT ON', 'GRANT SELECT, INSERT, UPDATE ON', INTENTS_SQL, INTENT_TESTS)
+add('prepared append-only delete permission', 'both app roles cannot update', 'GRANT SELECT, INSERT ON', 'GRANT SELECT, INSERT, DELETE ON', INTENTS_SQL, INTENT_TESTS)
+add('prepared call ID identity', 'same model call ID cannot become', "CREATE UNIQUE INDEX ai_tool_call_identity ON ai_command_intents(user_id, turn_id, call_id) WHERE phase <> 'occurrence';", '', INTENTS_SQL, INTENT_TESTS)
+add('prepared receipt required for occurrence', 'occurrence preparation requires the template commit', "  if (!receipt || typeof receipt.result['template_id'] !== 'string') throw new CommandIntentError('intent_not_ready');\n  return receipt.result['template_id'];", "  return '11111111-1111-4111-8111-111111111111';", INTENTS, INTENT_TESTS)
+cases.append(('prepared occurrence uses frozen settings', 'crash after template commit preserves', [
+    ('callId, snapshot: template.snapshot, questRef: null', "callId, snapshot: { ...template.snapshot, timezone: 'UTC', dayBoundaryMinutes: 0 }, questRef: null"),
+    ('timezone: template.snapshot.timezone }', "timezone: 'UTC' }"),
+], INTENTS, INTENT_TESTS))
+add('prepared payload uses shared closed schema', 'closed validation rejects', '  assertPayloadMatchesSchema(envelope.kind, envelope.payload);', '', SYNC, INTENT_TESTS)
+
+add('prepared occurrence receipt kind', 'occurrence receipt must match template kind', "AND kind = 'create_quest_template'", '', INTENTS, INTENT_TESTS)
+add('prepared occurrence receipt hash', 'occurrence receipt must match prepared template semantic hash', 'AND payload_hash = $3', 'AND $3::text IS NOT NULL', INTENTS, INTENT_TESTS)
+add('prepared occurrence receipt hash version', 'occurrence receipt must match semantic hash version', 'AND hash_version = $4', 'AND $4::integer IS NOT NULL', INTENTS, INTENT_TESTS)
+
+add('durable assistant persisted before effects', 'persists assistant response before executing', '    // Must persist and revalidate the lease AFTER provider await, BEFORE any tool effects.\n    await save();', '', DURABLE, DURABLE_TESTS)
+add('durable mutation counter restoration', 'gateway mutation counters survive restart', 'let mutations = restored.mutations;', 'let mutations = 0;', GATEWAY, DURABLE_TESTS)
+add('durable call counter restoration', 'gateway read call counter survives restart', 'let calls = restored.calls;', 'let calls = 0;', GATEWAY, DURABLE_TESTS)
+add('durable reference restoration', 'persisted read refs remain stale', '    byRef.set(ref, { ...snapshot }); refByOccurrence.set(snapshot.occurrenceId, ref);', '', GATEWAY, DURABLE_TESTS)
+add('durable cursor matches persisted results', 'cursor cannot skip saved', ' || cursor !== state.nextToolIndex', '', DURABLE, DURABLE_TESTS)
+add('durable provider call ID uniqueness', 'duplicate provider call IDs', 'if (seen.has(call.id)) invalid();', '', DURABLE, DURABLE_TESTS)
+add('durable closed checkpoint schema', 'unsupported versions and closed checkpoint', '!validCheckpoint(state)', 'false', DURABLE, DURABLE_TESTS)
+add('durable malformed response schema', 'malformed provider response', '!validCheckpoint(state)', 'false', DURABLE, DURABLE_TESTS)
+add('durable supported checkpoint version', 'unsupported versions and closed checkpoint', '|| turn.versions.checkpoint !== DURABLE_TURN_VERSIONS.checkpoint', '', DURABLE, DURABLE_TESTS)
+add('durable transcript call ID correlation', 'transcript tool results retain call ID', ' || message.callId !== call.id', '', DURABLE, DURABLE_TESTS)
+add('durable transcript tool name correlation', 'transcript tool results retain call ID', ' || message.name !== call.name', '', DURABLE, DURABLE_TESTS)
+add('durable global tool effect bound', 'global tool limit stops before another', "        if (state.executed >= state.limits.maxToolCalls) return finish('call_limit');", '', DURABLE, DURABLE_TESTS)
+cases.append(('durable interrupted round bound', 'saved rounds bound interrupted provider', [
+    ("    if (state.rounds >= state.limits.maxRounds) return finish('round_limit');", ''),
+    ('state.rounds > state.limits.maxRounds || ', ''),
+], DURABLE, DURABLE_TESTS))
+add('durable provider attempt reserved before HTTP', 'provider attempt is reserved durably', "state.rounds++; state.phase = 'awaiting';", "state.phase = 'awaiting';", DURABLE, DURABLE_TESTS)
+add('durable lease renewal', 'renews live lease before each provider', '    lease = (await renewTurnLease(options.database, options.userId, lease, options.leaseMs ?? 120_000)).lease;', '', DURABLE, DURABLE_TESTS)
+add('gateway state schema', 'gateway rejects closed schema', '!valid(state)', 'false', GATEWAY_STATE, STATE_TESTS)
+add('gateway reference identity uniqueness', 'gateway rejects duplicated occurrence', 'new Set(Object.values(state.refs).map(ref => ref.occurrenceId)).size !== refs.length', 'false', GATEWAY_STATE, STATE_TESTS)
+add('gateway contiguous reference IDs', 'gateway rejects gaps', 'refs.some((_, index) => !Object.hasOwn(state.refs, `q${index + 1}`))', 'false', GATEWAY_STATE, STATE_TESTS)
+add('gateway receipt counter consistency', 'gateway rejects receipt and mutation', ' || state.receipts.length > state.mutations', '', GATEWAY_STATE, STATE_TESTS)
+add('gateway mutation counter consistency', 'gateway rejects receipt and mutation', ' || state.mutations > state.calls', '', GATEWAY_STATE, STATE_TESTS)
+add('gateway copy snapshot isolation', 'gateway state copies data', 'JSON.parse(jsonDocument(value as JsonObject, 524_288)) as GatewayState', 'value as GatewayState', GATEWAY_STATE, STATE_TESTS)
+add('durable complete forwards command fence', 'durable completion forwards fence', '    if (options.durable) {\n      const durable = options.durable;\n      const prepared = await prepareCommandIntent', '    if (false) {\n      const durable = options.durable;\n      const prepared = await prepareCommandIntent', GATEWAY, DURABLE_TESTS)
+add('durable create uses prepared frozen commands', 'commit then crash restores same intent', '    if (options.durable) {\n      const durable = options.durable;\n      const spec', '    if (false) {\n      const durable = options.durable;\n      const spec', GATEWAY, DURABLE_TESTS)
+
+add('durable provider request copy', 'provider cannot mutate stored transcript', 'structuredClone(state.messages)', 'state.messages', DURABLE, DURABLE_TESTS)
+add('durable reverse reference restoration', 'restored reverse reference map keeps q2', 'refByOccurrence.set(snapshot.occurrenceId, ref);', '', GATEWAY, DURABLE_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

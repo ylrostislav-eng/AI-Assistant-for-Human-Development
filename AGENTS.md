@@ -2,7 +2,7 @@
 
 ## Назначение
 
-Создаём персональную ИИ-Систему развития по `docs/source/original-concept.ru.md`. Пользователь подтвердил стратегию: сначала для себя, затем публичный продукт. Есть backend с RLS, командами, заданиями, фактами выполнения, Telegram auth и работающим ботом; AI ToolGateway и HTTP-адаптеры проверены отдельно. Mini App, подключение модели к боту и production XP engine ещё не реализованы. Актуальные статусы и найденные дефекты — docs/13-handoff.md и docs/15-backend-review.md.
+Создаём персональную ИИ-Систему развития по `docs/source/original-concept.ru.md`. Пользователь подтвердил стратегию: сначала для себя, затем публичный продукт. Есть backend с RLS, командами, заданиями, фактами выполнения, Telegram auth и работающим ботом; AI ToolGateway и HTTP-адаптеры проверены отдельно. Свободный текст бота, egress-1 и базовый XP ledger/уровни реализованы; Mini App, durable AI turns, бюджеты и полный Progression Engine ещё не готовы. T-04b-3a сохраняет квитанции при отказе модели в живом процессе. T-04b-3b1 добавляет fenced PostgreSQL turn store (миграция 020); T-04b-3b2a — trusted optional turn fence внутри CommandBus transaction. T-04b-3b2b добавляет append-only prepared command intents (миграция 021) и их проверку в command transaction. T-04b-3b3a реализует отдельный durable core (typed checkpoint, gateway restore, reserved rounds и fenced mutations), пока без Telegram wiring. Следующая задача — Telegram durable adapter/atomic reply T-04b-3b3b; legacy bot/runTurn пока прежние. Актуальные статусы и найденные дефекты — docs/13-handoff.md и docs/15-backend-review.md.
 
 ## Порядок начала работы
 

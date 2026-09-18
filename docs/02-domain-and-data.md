@@ -181,3 +181,86 @@ Phase 1 создаёт только используемые таблицы; voi
 Inbox/identity lookup до определения user и worker-wide dispatch требуют узких explicit database policies/functions; не отключать tenant isolation целиком. Все user-owned связанные строки имеют составные FK. Web `device_id` — зарегистрированная installation, не случайный UUID на каждый запрос. Для bot/system actor использовать отдельный trusted actor context с audit metadata; не имитировать чужой device.
 
 Идентификаторы Telegram и PostgreSQL BIGINT counters не округлять при JSON/JavaScript преобразовании. Канонический wire type закрепить в схемах, включая версии; тестировать крайние значения. Новые tables/columns проходят миграцию upgrade уже созданной synthetic БД, а не только clean install.
+
+## 11. Реализованное хранилище ходов (T-04b-3b1)
+
+Миграция `020_ai_turn_store.sql` добавляет внутреннюю `ai_turns`.
+Строка `ai_turns / tool_runs` раздела 6 остаётся целевой моделью: отдельные
+`tool_runs`, conversations/messages и token/budget ledger ещё не созданы.
+Новая таблица пока не используется live bot/orchestrator.
+
+| Поле / ограничение | Текущая семантика |
+|---|---|
+| `(user_id, id)` | Primary key; internal UUID, одинаковый ID другого tenant не даёт доступа |
+| `(user_id, channel, source_scope, source_request_id)` | Unique origin: Telegram bot + update ID или Mini App installation + client request ID; scope не содержит token |
+| `input_hash` | SHA-256 канонического JSON input; порядок object keys несущественен, порядок массива существенен. Не отправляется модели |
+| `prompt_version`, `policy_version`, `checkpoint_version` | Версии хода. Повтор с другими версиями/политикой попыток — identity_conflict, не молчаливое обновление |
+| `checkpoint JSONB` | Внутренний opaque object со snapshot/transcript/refs/intents/results. API storage не подтверждает semantic schema; resume adapter обязан проверять checkpoint_version и свою закрытую схему |
+| `status` | pending → running → finished; running с expired lease можно забрать в новой попытке. finished не открывается автоматически |
+| `revision bigint` | Возрастает при claim/save/renew/finish; в TypeScript — десятичная строка |
+| `lease_token`, `lease_expires_at` | Только running имеет lease; expiry — UTC instant по PostgreSQL clock. Token выдаётся только результатом claim, не readTurn |
+| `attempts`, `max_attempts` | Persisted attempts ≤ max_attempts (1…10). Лимит не сбрасывается при takeover; exhausted claim возвращает null |
+
+Обе app roles работают под owner RLS с FORCE; у worker нет bypass/global policy.
+Без tenant setting строки недоступны. Удаление аккаунта каскадно удаляет snapshot.
+Roles имеют SELECT/INSERT/UPDATE, отдельный DELETE не выдан.
+
+Storage API ограничивает input до 256 KiB, checkpoint до 512 KiB, дерево до
+32 уровней/20 000 узлов. Отвергает циклы, undefined, non-finite numbers,
+class instances/accessors/symbol keys, NUL и unpaired surrogates. В ошибки
+валидации не входят содержимое или поле с private value.
+
+Checkpoint хранится как private server data и не является разрешённым AI context:
+в нём есть internal IDs. Наружу можно передавать только явно собранный контекст
+после egress policy. Перед подключением хранения к live bot нужны snapshot schema,
+retention/export/delete lifecycle и transaction-level command fencing.
+
+## 12. Prepared command intents (T-04b-3b2b)
+
+Миграция `021_ai_command_intents.sql`, внутренний append-only journal.
+Это команды изменяющих tools, не все tool calls: read results и общий
+transcript пока принадлежат будущему typed checkpoint.
+
+| Поле | Семантика |
+|---|---|
+| `(user_id, turn_id, step)` | PK; tenant FK к ai_turns с account cascade |
+| `call_id`, `phase` | Исходный model call ID; template/occurrence/complete. Partial unique index допускает один основной смысл на call ID и отдельную derived occurrence phase |
+| `command_id` | Серверный derived UUID от turn + step; unique для пользователя |
+| `document` | Exact validated envelope + callId + selected questRef + frozen snapshot: clock/localDate/timezone/boundary/refs. Private JSONB, API ≤256 KiB |
+| `intent_hash` | SHA-256 всего canonical document: изменения metadata/snapshot тоже конфликтуют |
+| `command_hash`, `hash_version` | Общий semanticHash v2 CommandBus: kind/target/version/payload/schema/dependency |
+
+Обе app roles имеют только SELECT/INSERT, owner FORCE RLS, без worker bypass.
+Обновление/удаление приложением запрещено; удаление аккаунта каскадное.
+Retained snapshot не является AI outbound context. Migration проверена как
+upgrade с уже claimed turn на 020 и повторный запуск без reapplied migration.
+
+Preparation требует live turn lease, сериализуется turn row lock, не меняет
+revision/checkpoint и не даёт domain effect. Выполнение проверяет intent и
+владение в одной CommandBus transaction. Ручные legacy команды идут без
+intent fence. Runtime gateway/retention/export ещё требуют отдельного wiring.
+
+## 13. Typed durable checkpoint (T-04b-3b3a)
+
+Хранится в существующей ai_turns.checkpoint, новая SQL migration не нужна.
+Checkpoint_version = durable-turn-1; prompt/policy = coach-1/egress-1.
+Closed document: version, frozen system/context/limits, phase, messages,
+rounds, executed, nextToolIndex, gateway, failures, result.
+
+Gateway хранит stable refs qN→occurrence/title/version, receipts, calls/mutations.
+Read result остаётся в tool message; state сохраняется после каждого tool.
+Restore не переприсваивает q1 другому объекту и не обновляет version из current
+DB без нового явного read. Contiguous refs и unique occurrence IDs проверяются.
+Complete intent содержит только selected ref; весь refs map остаётся в checkpoint.
+
+phase: ready → awaiting (round reservation) → tools → ready; done с terminal
+result фиксируется atomically finishTurn. nextToolIndex совпадает с количеством
+результатов последнего assistant; executed — со всеми tool messages. Results
+коррелируют с call ID/name; повтор call ID в transcript запрещён. Неподдержанная
+версия/схема/связность дают безопасную ошибку до claim/provider.
+
+Rounds — **provider attempts**, включая interrupted/failed, не успешные responses
+legacy runTurn. Это local turn bound; usage/fallback costs и глобальный бюджет
+не реализованы. Ограничения: rounds 1…16, tool/call bound 1…64, mutations 0…64,
+≤calls; документ остаётся под общим 512 KiB/20k nodes bound. Oversized data
+отклоняется, а не silently truncates историю; adapter ещё должен показать fallback.

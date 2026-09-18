@@ -1,26 +1,26 @@
 # 13. Передача работы следующей модели
 
-Обновлено: 2026-09-17. Текущий документ заменяет накопленные противоречивые статусы; прежний журнал сохранён в [историческом архиве](archive/pre-telegram-2026-09-16.txt). Архив не является планом следующих действий.
+Обновлено: 2026-09-18. Текущий документ заменяет накопленные противоречивые статусы; прежний журнал сохранён в [историческом архиве](archive/pre-telegram-2026-09-16.txt). Архив не является планом следующих действий.
 
 ## 1. Продукт и актуальное поручение
 
 Сначала личная Система развития, затем публичный продукт. Клиент — **Telegram Mini App + бот**, ADR-013–016. Пять вкладок, Goal → AI Plan → Quest → Completion → XP → Adaptation сохраняются. Сервер детерминированно считает прогресс; Telegram — интерфейс и транспорт.
 
-Последнее поручение: посмотреть добавленное с Клодом и продолжить разработку. Проверены изменения до `0f6c3a4`; выбран и завершён ограниченный срез **T-04b-1** — HTTP-адаптеры поставщиков. T-DOC-01 и последующие серверные/Telegram-срезы сохраняются как история. Следующая задача — T-04b-2, раздел 6; весь AI-контур ещё не готов.
+Последнее поручение: кратко проверить, где остановились с Клодом, и продолжить по плану. Проверен baseline `657bae5`: ручные Telegram-команды, повторения, XP/уровни, day-close и egress policy добавлены. Завершён небольшой срез **T-04b-3a** — подтверждения committed команд при отказе модели в том же процессе (раздел 11). После него завершён **T-04b-3b1**, PostgreSQL turn storage (раздел 12). Завершён **T-04b-3b2a**, transaction-level CommandBus fencing (раздел 13). Завершён **T-04b-3b2b**, persisted prepared intents (раздел 14). Завершён **T-04b-3b3a**, durable core/gateway restore (раздел 15). Следующий — **T-04b-3b3b**, Telegram durable adapter; весь T-04b-3 не завершён.
 
 ## 2. Фактическая реализация
 
 | Область | Есть | Осталось |
 |---|---|---|
 | Toolchain | npm workspaces, pins/lockfile, TS/Fastify/pg, test tooling | Web scaffold/lock additions после compatibility smoke |
-| DB | Миграции 001–018, RLS/roles, Activity, Telegram identity/inbox/messages/delivery/actions | Progression ledger, durable AI turns и budget tables |
+| DB | Миграции 001–020, RLS/roles, Activity, Telegram tables, XP ledger, внутреннее AI turn storage | Command fencing/durable loop и budget tables |
 | Identity | Dev synthetic login, вход через Telegram по подписанной initData с allowlist и защитой от повтора (**T-01 выполнен**), opaque access/refresh, rotation/logout, закрытый доступ | Привязка installation (T-05), живой запуск Mini App на устройстве |
 | Commands | Bus, receipts, user counters, batches, own-key registry, семантический hash, каноническая цель/версия, закрытые схемы нагрузки (**T-00a выполнен**) | Расширения domain; политика фоновых исполнителей |
-| Worker | Outbox/dispatch/jobs, аренда с владельцем, CAS на завершении/неудаче/продлении, ограниченный повторный захват (**T-00b выполнен**), Telegram handlers/delivery ledger | Day-close/reminders; очистка и политика ambiguous delivery |
+| Worker | Outbox/dispatch/jobs, аренда с владельцем, CAS на завершении/неудаче/продлении, ограниченный повторный захват (**T-00b выполнен**), Telegram handlers/delivery ledger | Reminders; очистка и политика ambiguous delivery |
 | Quests | Create template/materialize/start/complete/partial/cancel states, факт выполнения с объёмом/длительностью/отрезком и исправление факта (**остаток R6 закрыт**) | Timer, undo, evidence, delta частичного к полному, связь с user_day |
-| Time | Pure CalendarMath, точное смещение пояса, разрыв и наложение по каждой минуте (**T-00c**), непрерывная цепочка дней без пересечений (**T-00d**) | Scheduler/day-close/reminders |
-| Клиент/бот | Telegram auth, `/bootstrap` + `/sync/pull`, webhook, `/new`, `/today`, versioned callbacks completion; живой цикл отмечен в 3.16 | Mini App, installation binding, bounded domain reads, voice |
-| AI/RPG | Документация, JSON rules, arithmetic sanity; **слой инструментов (T-04a)**: каталог с закрытыми схемами аргументов, шлюз со ссылками вместо идентификаторов, цикл хода с пределами, версионированная подсказка, подставная модель; HTTP transport/fallback (**T-04b-1**) | Политика исходящих данных, durable turns/бюджет, runtime/live wiring (остаток T-04b); Progression/ledger/Recovery/reviews отсутствуют |
+| Time | Pure CalendarMath, точное смещение пояса, разрыв и наложение по каждой минуте (**T-00c**), непрерывная цепочка дней без пересечений (**T-00d**) | Day-close реализован; scheduler/reminders ещё нужны |
+| Клиент/бот | Telegram auth, `/bootstrap` + `/sync/pull`, webhook, `/new`, `/today`, versioned callbacks completion, /every, /stop, /rename, /me; живой цикл отмечен в 3.16 | Mini App, installation binding, bounded domain reads, voice |
+| AI/RPG | ToolGateway/runTurn, HTTP/fallback, runtime config и свободный текст, egress-1; детерминированный XP ledger, level math, consistency; сохранение квитанций при отказе модели (T-04b-3a) | Durable turns/бюджет; live acceptance. Egress-1 не обезличивает raw user text/titles; Recovery/reviews и полный движок прогрессии ещё не готовы |
 | Operations | DB script; по журналу предыдущей сессии Railway PostgreSQL/API/worker + HTTPS, бот; backup/verify_restore и cron (3.17). В этом срезе production не перепроверялся | Третье место копий, автозапуск restore-кластера, раздельные пароли ролей, полный пилот |
 
 Реальные routes: `GET /health`, `GET /health/ready`, `POST /auth/dev-login`, `POST /auth/telegram`, `/auth/refresh`, `/auth/logout`, `GET /me`, `POST /commands`, `POST /sync/push`, `GET /bootstrap`, `GET /sync/pull`,
@@ -1294,11 +1294,21 @@ Baseline `4ecfee7`, исходное дерево чистое.
 
 ## 6. Следующий законченный scope
 
-**Следующий срез — T-04b-2: политика исходящих данных.** T-04a (инструменты)
-и T-04b-1 (HTTP/fallback) завершены отдельно. Общая задача T-04b — живой
-поставщик модели и подключение к боту — остаётся открытой. Порядок:
-T-04b-2 privacy → T-04b-3 durable turns/budget → T-04b-4 runtime/bot/live
-acceptance. Критерии каждого среза — docs/10, раздел 6.
+**Следующий срез — T-04b-3b3b: Telegram durable adapter и atomic terminal reply.**
+T-04b-3b3a (typed checkpoint/core/gateway restore) завершён, см. раздел 15.
+T-04b-3b2b (prepared commands, миграция 021) завершён, см. раздел 14.
+T-04b-3b2a (trusted transaction-level turn fencing) завершён, см. раздел 13.
+T-04b-3b1 (storage, миграция 020) завершён; live bot его ещё не использует.
+T-04b-3b3 остаётся partial: core готов, Telegram adapter ещё нет.
+T-04b-2 (egress-1) добавлен Клодом, но обезличивание текста остаётся открытым.
+T-04b-3a сохраняет квитанции при provider failure в живом процессе.
+Identity/versioned state/storage lease уже реализованы в T-04b-3b1.
+Теперь нужно Telegram wiring с короткими DB transactions и atomic reply
+без повторного эффекта и без потери refs.
+Отдельный следующий срез — T-04b-3c: атомарные budget reservations каждой
+provider attempt, включая fallback и неизвестный usage. T-04b-4 runtime/bot
+уже реализован вне очереди; bounded live acceptance остаётся открытым.
+Не повторять завершённую T-04b-2 и не объявлять T-04b-3 целиком готовой.
 
 Что в нём:
 
@@ -1311,16 +1321,15 @@ acceptance. Критерии каждого среза — docs/10, раздел
   выведенного идентификатора команды, но самого разговора не помнит никто.
 - Предел расхода на пользователя: запросов в минуту и потолок за сутки. Без
   него один цикл модели по инструментам стоит денег молча.
-- Свободный текст в боте вместо `/new` и `/today`.
+- Свободный текст и runtime config уже есть; `/new` и `/today` сохранить как ручной путь.
 - Живая проверка: настоящий ход с настоящей моделью, и отдельно — поведение при
   отказе поставщика. Ручной путь (`/new`, `/today`, кнопки) обязан продолжать
   работать без модели (ADR-011).
 
-**Владелец решил 2026-09-17: остаёмся на стороннем шлюзе**, прямой ключ у
-поставщика пока не берём. Условие решения — возможность сменить поставщика
-правкой настроек, без правки шлюза инструментов (ADR-018). Значит, адрес, ключ
-и модель остаются переменными окружения, а в коде не должно появиться ни одного
-условия вида «если это тот самый шлюз».
+**Актуальное решение владельца 2026-09-18 (3.20):** посредник был пробой,
+при возможности переходить на прямой доступ. Ждать покупки ключа для локальной
+разработки не требуется. `AiProvider` остаётся границей; production/live смена
+поставщика требует проверки настроек и acceptance, не переписывания домена.
 
 **Оператору шлюза видно всё, что уходит модели.** Посредников сейчас двое —
 шлюз и сам поставщик, — и у шлюза нет ни опубликованных условий хранения, ни
@@ -1420,10 +1429,10 @@ application logs/chat. Транспорт T-04b-1 его не сохраняет
 
 ## 7. Что нужно от владельца
 
-- **Выбор доступа уже сделан:** остаёмся на стороннем шлюзе (решение владельца
-  2026-09-17). Повторно покупать прямой OpenAI key не требуется для продолжения.
-  До T-04b-4 нужны явный месячный предел и цены фактически выбранных моделей;
-  прежняя оценка «1–3 доллара» не подтверждена и не является бюджетом.
+- **Доступ:** по решению 18 сентября планируется прямой поставщик, когда
+  появится возможность; посредник был экспериментом. Для локальных проверок
+  ключ не нужен. До live acceptance — действующий server key, проверенные
+  model IDs, цены и явный месячный предел; старые оценки не являются бюджетом.
 - **Ничего больше не ждём.** Telegram ID (554187947) и бот `@dv_system_bot`
   получены, Railway развёрнут, домен не понадобился.
 
@@ -1573,3 +1582,488 @@ reservations на каждую попытку; при падении после 
 провайдера после commit — транспорт это не исправляет, поэтому бот к нему
 не подключён. После этого T-04b-4: runtime env/secret wiring и bounded live
 acceptance. Наличие `maxOutputTokens` не заменяет месячный лимит расходов.
+
+## 11. T-04b-3a — квитанции при отказе модели, 2026-09-18
+
+**Завершён ограниченный первый срез T-04b-3**, не вся родительская задача.
+Baseline Клода — `657bae5`, дерево в начале чистое. Добавлены повторения,
+переименование, XP ledger/level/consistency, day-close и egress-1. Проверены
+handoff, diff/history, затронутые AI/Telegram consumers; весь baseline заново
+прошёл интеграционные тесты. Production/live доступ в этой сессии не проверялся.
+
+### Проблема и результат
+
+`create_quest`/`complete_quest` пишут своей транзакцией. Если следующий вызов
+модели падал, `runTurn` выбрасывал исключение и бот возвращал общий отказ без
+квитанций. Человек не видел уже сохранённое действие и мог отправить новое
+сообщение с повторным намерением.
+
+Теперь `runTurn` ловит ошибку только вокруг `provider.generateTurn` и возвращает
+пустой `text`, прежние `receipts`/`failures`, число успешных раундов и
+**`stopReason: 'provider_error'`**. Старый draft и raw exception не возвращаются.
+Весь ход не повторяется; fallback остаётся ответственностью провайдера.
+Ошибки gateway/CommandBus не перехватываются этим обработчиком.
+
+Бот сохраняет ответ `ai_unavailable` с отдельным «Записано:», если квитанции
+есть, сообщением о недоступности ИИ и `/today`/`/new`. Provider failure не
+показывается как предел шагов. При нуле квитанций нет обещания записи.
+Причина не приписывается внешнему поставщику: policy failure тоже возможен.
+
+### Файлы и контракты
+
+- `modules/ai/turn.ts`: расширен внутренний `TurnResult.stopReason`, добавлен
+  failure result; провайдеры и wire contract не менялись.
+- `modules/telegram/inbox.ts`: consumer нового статуса и безопасное отображение
+  прежних квитанций; generic catch для других ошибок остаётся отдельно.
+- `tests/unit/ai-turn.test.ts`: 7 новых проверок — timeout, HTTP 503,
+  egress failure, неизвестный provider error после результата инструмента;
+  отказ первого запроса, сохранение tool failures, ошибка gateway.
+- `tests/integration/telegram-ai.test.ts`: реальный command commit, отказ
+  следующего запроса, сохранённый reply с квитанцией, processed update,
+  повторный запуск обработчика без повторного обращения к модели/задания.
+- `scripts/check_ai_transport_controls.py`: добавлены индексы **86–95**;
+  заголовок исправлен — часть контролей давно требует disposable DB.
+- AGENTS, docs/00/05/10/13: актуальные статусы; ADR-019; следующий срез.
+  DB schema, миграции и OpenAPI не менялись.
+
+### Реальные результаты проверок
+
+Среда: Node **22.23.2**, PostgreSQL **18.6**.
+
+- Сначала тесты: baseline `ai-turn` дал **6 FAIL / 7 PASS** — provider failures
+  выбрасывались вместо структурированного результата. До implementation.
+- Финальный `npm run typecheck` — **PASS**.
+- Финальный `npm test` — **249/249 PASS, 18 файлов** (baseline 242).
+- Полный DB suite — **377/377 PASS, 37 файлов** (baseline 376).
+- После мутаций и последней текстовой правки целевой Telegram AI suite —
+  **7/7 PASS**. Проверяются queued messages, а не отправка настоящему Telegram.
+- Временный кластер `/tmp/system-receipts-sep18-pg`, порт `55439`, базы
+  `receipts_dev`/`receipts_test`. Все DB URLs заданы явно через окружение,
+  production/.env не использовались. Кластер после проверок остановлен.
+- `git diff --check`, relative links изменённых Markdown — **PASS**.
+- Сканер всех изменённых файлов дал **одно старое false positive**:
+  `telegram/inbox.ts:64`, `const token = …()` — вызов функции, не строковый
+  секрет. Строка совпадает с HEAD; остальные изменённые файлы без находок.
+  Сам сканер не исправлялся и формальный полный PASS не заявляется.
+- Нет live AI requests, Telegram отправок, deploy или device tests.
+
+### Отрицательные контроли (новые 10, все пойманы утверждениями)
+
+Запущены `python -B scripts/check_ai_transport_controls.py 86 93` и
+`… 93 96` (последний с явными URLs временной БД). Подробные отчёты:
+`/tmp/ai-transport-controls-pbb1murk`, `/tmp/ai-transport-controls-bmgzl3eh`.
+Каждая мутация восстановлена; финальные зелёные проверки выше.
+Старые 86 контролей в этой сессии заново не прогонялись.
+
+| Индекс | Мутация | Целевой тест падает потому что |
+|---|---|---|
+| 86 | Recovery result заменён throw | Нет результата с квитанцией (4 provider failure fixtures) |
+| 87 | Квитанции удалены из failure result | Committed квитанция отсутствует |
+| 88 | Возвращён предыдущий text | Stale draft попадает в результат |
+| 89 | Удалены прежние tool failures | Не виден version conflict |
+| 90 | Неуспешный запрос посчитан успешным раундом | Первый отказ возвращает rounds=1 вместо 0 |
+| 91 | Добавлен повтор provider request в catch | Первый отказ делает 2 обращения вместо 1 |
+| 92 | Gateway exception превращён в отказ инструмента | Ошибка БД перестаёт распространяться |
+| 93 | Бот не выводит receipts | В queued reply нет подтверждения committed задания |
+| 94 | Provider failure отдан как ai_reply | Неверный kind при недоступности ИИ |
+| 95 | Provider error идёт в round-limit rendering | Нет сообщения о недоступности; показывается предел шагов |
+
+### Следующий срез и оставшиеся ограничения
+
+**T-04b-3b — durable checkpoints/resume**, затем T-04b-3c budget reservations.
+Нынешнее исправление не сохраняет transcript/refs/receipts в turn storage:
+process crash или падение внешней inbox transaction после command commit
+требуют отдельного восстановления. Command receipts сами по себе не сохраняют
+намерение и порядок tools новой генерации. Нельзя при redelivery считать
+повторную генерацию доказанно тем же набором команд. Это главный следующий тест.
+Отказ во время gateway invoke также остаётся отдельным crash/error boundary.
+
+Не считать egress-1 полным privacy gate: разрешённые title/user strings не
+обезличены; prompt проверяется по префиксу версии. Пользовательский health/имена
+могут остаться внутри разрешённого текста — documented limitation из 3.31.
+Public gate требует решения, проверяемого для содержимого, не только имён полей.
+Runtime routing Клода сейчас выводит protocol из prefix и требует fallback
+другого семейства; это ограничивает независимость конфигурации из ADR-018.
+Сохранено как отдельный долг; в этом срезе routing не переписывался.
+
+## 12. T-04b-3b1 — durable turn storage, 2026-09-18
+
+**Завершён storage foundation**, не весь resume и не T-04b-3b целиком.
+Предыдущий T-04b-3a из рабочего дерева сохранён. Новые файлы: миграция
+`020_ai_turn_store.sql`, `modules/ai/turn-store.ts`,
+`tests/integration/ai-turn-store.test.ts`. Добавлены контроли 96–124 в
+`check_ai_transport_controls.py`; обновлены AGENTS и docs/00/02/05/10/13.
+Новые npm packages, endpoints, HTTP-запросы и deploy не добавлялись.
+
+### Реализованный контракт
+
+- `openTurn(db, userId, args)` сохраняет internal UUID, tenant + channel +
+  scope + request ID, hash канонического input, prompt/policy/checkpoint
+  versions, maxAttempts и initialCheckpoint. Replay возвращает прежнее
+  состояние, не перезаписывает его свежим snapshot. Changed input/source/
+  versions/maxAttempts или reuse source с другим turn ID — identity_conflict.
+- `readTurn` возвращает checkpoint/versions/status/revision/attempts;
+  lease token не выдаёт. Worker использует ту же tenant RLS, без bypass.
+- `claimTurn` атомарно выдаёт `{id, token, revision}` одному исполнителю,
+  увеличивает попытку и revision. PostgreSQL clock определяет expiry.
+  Busy/finished/missing/exhausted возвращают null — это отсутствие разрешения
+  исполнять, а не завершение действий. maxAttempts сохраняется (1…10).
+- `saveTurnCheckpoint` и `renewTurnLease` возвращают обновлённый handle;
+  caller обязан заменить прежний. `finishTurn` сохраняет final checkpoint,
+  убирает lease и делает terminal status. Save/renew/finish проверяют token,
+  revision, running и live expiry **после получения row lock**.
+- Revision — bigint decimal string. Лимиты storage: input ≤256 KiB,
+  checkpoint ≤512 KiB, ≤32 levels/20 000 nodes, lease ≤600 000 ms.
+  Отклоняются JSON losses/invalid text: undefined/non-finite/cycles,
+  class instances/accessors/symbol keys, sparse/extra-property arrays,
+  NUL и lone surrogate. Errors не содержат private input.
+- Account delete каскадно удаляет checkpoint. В snapshot могут быть raw
+  transcript и internal refs/IDs; это private server data, **не AI context**.
+  Store проверяет JSON, а не semantic resume schema. Перед live hookup нужны
+  closed checkpoint schema и retention/export lifecycle.
+
+### Отрицательные контроли: 29 новых, все пойманы
+
+Запуски на отдельной БД с явным DATABASE_URL: `96 106`, `106 121`,
+`121 124`, `124 125`. Отчёты соответственно:
+`/tmp/ai-transport-controls-8kq6yoot`,
+`/tmp/ai-transport-controls-pm8egydq`,
+`/tmp/ai-transport-controls-evoogbwc`,
+`/tmp/ai-transport-controls-_crjumd1`.
+Старые 96 контролей в этом срезе не повторялись. Мутации восстановлены.
+
+| Индекс | Мутация | Доказанный отказ целевого утверждения |
+|---|---|---|
+| 96 | Убрана canonical key sorting | Semantically identical reordered input перестаёт возвращать прежний turn |
+| 97 | Убрана source unique constraint | Same source с новым UUID создаёт другой turn |
+| 98–101 | По отдельности убраны input hash и три version checks | Changed identity/unsupported version не отклоняются |
+| 102 | Убрана проверка UUID при source replay | Source reuse с другим turn ID принимается |
+| 103 | Active lease можно захватить повторно | Два исполнителя получают leases вместо одного |
+| 104 | Убран lease_token guard | Старый holder с новой revision может save/finish/renew. Использована намеренно новая revision, чтобы другой guard не маскировал token check |
+| 105 | Убран revision guard | Тот же holder перезаписывает более новый checkpoint старой revision |
+| 106 | Убран expiry guard | Expired holder пишет без takeover |
+| 107 | Убрана блокировка до expiry check | Запись разрешена после истечения lease во время ожидания UPDATE lock |
+| 108 | Finished снова можно claim | Terminal result переоткрывается |
+| 109 | Убран application attempt-cap guard | Claim не возвращает null при exhaustion; SQL attempts bound всё ещё защищает таблицу и даёт driver error. Контроль доказывает application exhaustion contract, не единственность этого guard |
+| 110–111 | Убраны byte cap / finite validation | Большой/losing JSON принимается |
+| 112–113 | Убраны NUL / accessor проверки | Driver error вместо safe invalid_input; выполняется getter с private exception |
+| 114 | Owner RLS заменена на true | Runtime/worker query без tenant context видят private checkpoints |
+| 115 | Убран account cascade | Удаление аккаунта не выполняет ожидаемую очистку (FK error) |
+| 116–119 | Убраны positive limits / outer object / nesting / plain JSON guards | Storage больше не возвращает ожидаемый safe invalid_input |
+| 120 | Убрана проверка Unicode | По отдельности high/low surrogate fixtures доходят до driver |
+| 121–123 | Убраны policy attempts / source channel / source scope checks | Reused turn identity принимается с другими настройками/источником |
+| 124 | Вернулась обычная Array.from serialization | Accessor выполняется, extra array field молча теряется; sparse fixture всё ещё отвергается отдельным undefined guard |
+
+### Проверки и обнаруженное в них
+
+- Сначала новый DB suite: **RED import** — ещё нет turn-store.ts, no tests.
+  Это порядок test-first, не отрицательный контроль защиты.
+- Первая версия storage: **15/15 DB PASS**.
+- Дополнительный lock-wait тест сначала **FAIL (16 PASS / 1 FAIL)**:
+  pg_stat_activity читается по cached statistics snapshot в той же transaction.
+  Перенесено наблюдение ожидания в отдельное соединение; проверка прошла, а
+  контроль 107 подтвердил, что она ловит отсутствие нужной блокировки.
+- Перед array validation: **2 FAIL / 1 PASS / 22 skipped** targeted tests.
+  Accessor исполнялся, extra field терялся; написаны regression tests, затем
+  исправлен serializer и проверен контроль 124.
+
+### Следующий законченный scope
+
+**Историческая постановка T-04b-3b2 — prepared command intents + transaction-level fencing.**
+После T-04b-3b2a актуален следующий T-04b-3b2b, см. раздел 13.
+Store fencing защищает только checkpoint, не domain effects. Не подключать
+новый store к in-memory runTurn через отдельное `read/claim → invoke` и не
+называть это безопасным resume. Старый worker иначе успеет выполнить команду
+после takeover, даже если checkpoint write уже запрещён.
+
+Для следующего агента:
+
+1. Persist exact tool proposal/validated prepared intent до исполнения:
+   call ID, semantic kind/target/version/payload, server-derived command ID,
+   snapshot refs, frozen clock/day/settings. Не генерировать новую модельную
+   команду для прежнего шага после redelivery.
+2. Проверить live turn lease и intent в **той же DB transaction**, где
+   CommandBus выполняет domain handler/receipt/XP. Согласовать lock order со
+   строкой user_change_counters; отдельная preflight lease check недостаточна.
+   Legacy HTTP/manual callers сохранить без новых обязательных полей.
+3. Create quest — два command commits (template + occurrence). Проверить crash
+   между ними и после occurrence commit до checkpoint; прежняя local date,
+   timezone и prepared payload не должны стать новыми при восстановлении.
+4. Версии и refs восстанавливаются из снимка; не перечитывать current version
+   перед completion, иначе stale intent проходит по неправильной причине.
+5. Tests: two holders/takeover, commit→crash, changed intent same step,
+   stale version и tenant isolation; отрицательные контроли независимы от
+   state machine/command receipt protections.
+
+После этого **T-04b-3b3**: durable orchestration, gateway snapshot restore,
+checkpoint assistant response/results/counters, Telegram reply+processed
+update. Сейчас бот по-прежнему вызывает старый in-memory runTurn; crash
+recovery, conversations и budget reservations не реализованы.
+
+
+### Финальная проверка T-04b-3b1 и среда
+
+- `npm run typecheck` — **PASS** после восстановления всех мутаций.
+- `npm test` — **249/249 PASS, 18 файлов**.
+- Финальный full integration — **402/402 PASS, 38 файлов**:
+  прежние 377 + **25 новых turn-store tests**. До последней правки массива
+  полный набор также давал 399 PASS; финальное число выше.
+- Node **22.23.2**, PostgreSQL **18.6**. Новый isolated cluster:
+  `/tmp/system-turn-store-sep18-pg`, порт **55440**, БД `turn_store_test`.
+  URLs заданы через environment явно; .env/prod DB не использовались.
+  Кластер остановлен после тестов. Нужные socket/process permissions прошли
+  auto-review; никаких внешних AI/Telegram запросов не было.
+- `git diff --check` и local Markdown links — **PASS**.
+- Secret scan новых файлов — **0 находок**. Скан всех изменённых файлов
+  оставляет прежний false positive `telegram/inbox.ts:64`, вызов функции
+  `const token = …()` (строка уже проверена в T-04b-3a и не изменялась).
+  Полный scanner PASS не заявляется, сам scanner не ослаблен.
+- Live bot/model, process kill→bot resume, production migration/deploy,
+  retention worker и бюджет не проверялись/не реализованы этим scope.
+- Usage snapshot при завершении: **36% пятичасового окна использовано**,
+  около 64% остаётся; лимит общий для аккаунта. Выбранный storage scope
+  завершён и проверен, следующий CommandBus scope не начат в этой задаче.
+
+## 13. T-04b-3b2a — CommandBus turn fencing (2026-09-18)
+
+### Завершённый scope
+
+T-04b-3b2 разделён на два проверяемых шага. Завершён только **3b2a**:
+trusted optional turn fence в `shared/commands/bus.ts` и `executeEnvelope`.
+Persisted prepared intents (3b2b), durable gateway/loop/bot (3b3) не сделаны.
+Миграция и public command envelope не изменились; ручные callers совместимы.
+
+`CommandTurnFence` структурно совместим с store `TurnLease`.
+`LostTurnLeaseError` имеет фиксированное сообщение без payload/token и code
+`lost_turn_lease`; sync adapter не маскирует ошибку как committed/rejected tool.
+UUID и int8 revision проверяются перед SQL, malformed данные не порождают
+parser exception с private value.
+
+Lock order: user_change_counters → ai_turns FOR UPDATE → отдельный запрос
+running/token/revision/live expiry по clock_timestamp() → duplicate check →
+handler/XP/receipt/outbox. Guard проверяется после contention и до duplicate
+receipt. Turn row удерживается до commit. Уже разрешённый handler может
+закончить после wall-clock expiry: claim ждёт его commit, затем может takeover.
+Duplicate rollback снимает locks, после него читается прежняя receipt без
+domain effects. Claim/save/renew store не берут user counter; в будущей intent
+реализации нельзя брать counter после turn lock, иначе получится inversion.
+
+### Проверки
+
+Новый `tests/integration/ai-command-fence.test.ts`: **11/11 PASS**.
+Первые 7 тестов запущены до реализации: **7 assertion failures**, команды
+ошибочно committed и row lock отсутствовал. Затем добавлены adapter/XP,
+turn contention, malformed input и handler rollback проверки.
+
+Проверены expired lease, неверный token независимо от revision/status,
+устаревшая revision при верном token, чужой/missing turn, takeover с повтором
+committed receipt, expiry при ожидании user counter и turn row locks,
+удержание turn lock во время handler, rollback/retry, реальный complete_quest:
+expired lease не начисляет XP и не расходует seq, valid replay даёт одну ledger
+запись. Contention синхронизируется через pg_stat_activity, lock persistence
+через FOR UPDATE NOWAIT; произвольный sleep не является доказательством гонки.
+
+Отрицательные контроли **125–135: 11/11 caught assertion failures**, защиты
+восстановлены. Снятие guard перед effects; token; revision; expiry; turn lock;
+forwarding fence через executeEnvelope; int8 validation; перенос guard до user
+lock; проверка expiry до turn lock; пропуск fence для duplicate; пропуск fence
+для чужого turn. Selector первого прогона 125 не выбрал тест (caught=false),
+исправлен, повтор реально упал по assertion; пропущенный тест не засчитан.
+Reports: `/tmp/ai-transport-controls-df_h48my` (125–132),
+`/tmp/ai-transport-controls-6gr99_4b` (133–135).
+
+Final run после восстановления всех защит:
+- `npm run typecheck --workspace services/backend` — PASS.
+- Unit/contracts — **249/249**, 18 файлов PASS.
+- Integration — **413/413**, 39 файлов PASS.
+- `git diff --check` — PASS.
+Logs: `/tmp/command-fence-unit-final.log`,
+`/tmp/command-fence-integration-final.log`.
+Disposable PostgreSQL: `/tmp/system-command-fence-sep18-pg`, порт 55441,
+`fence_test`; создан отдельно, schema reset только в нём, после tests остановлен.
+Live data/secrets не использованы. На начало scope пятичасовой used 38%,
+после проверки 46% (54% остаётся); это общий account snapshot, не гарантия
+расхода следующего среза.
+
+### Историческая постановка T-04b-3b2b (завершён, см. раздел 14)
+
+Persisted exact validated prepared intents до исполнения. Сохранить call ID,
+semantic kind/target/version/payload, derived command ID, frozen clock/day/settings,
+refs snapshot. Проверить соответствие сохранённому intent в той же транзакции
+CommandBus, сохранив текущий turn fence и lock order. Не принимать envelope
+заново от модели для уже подготовленного шага. Create quest состоит из двух
+commits: тестировать crash между template/occurrence и после commit до
+checkpoint с прежними payload/date/timezone; stale refs не обновлять текущей
+version ради успешного completion. После 3b2b — 3b3 bot resume и 3c budget.
+
+Live AI/Telegram/network/deploy не выполнялись. Бот пока остаётся на прежнем
+in-memory gateway и не защищён новым optional fence автоматически.
+
+## 14. T-04b-3b2b — Persisted prepared command intents (2026-09-18)
+
+### Завершённый scope
+
+Новая migration 021 и `modules/ai/command-intents.ts`. Append-only exact
+prepared envelopes, frozen clock/day/settings/refs; закрытая schema, общий
+payload/target/version parser. Preparation копирует input до await и проверяет
+live lease под turn row lock, без domain effects и без изменения revision.
+Identical canonical replay возвращает stored document; изменённый whole input
+даёт intent_conflict даже до первого command receipt. Main call ID закреплён
+partial unique index; отдельная occurrence phase разрешена.
+
+Bus fence расширен optional intent `{step,hash}`. После user counter → turn row
+locks и live lease check в той же effect transaction сравниваются turn/step/
+digest/command ID/semantic hash v2 до receipt/handler. Mismatch бросается наружу
+как intent_mismatch, seq/domain/XP откатываются. Normalization вынесена в общий
+`buildEnvelopeCommand`, manual callers и public envelope не изменились.
+
+Occurrence API не принимает новый payload: только call ID, сохранённый template
+и matching committed receipt. Date/zone/clock и template ID остаются прежними
+после смены profile/timezone и takeover. Completion берёт прежнюю ref version,
+не перечитывает current version для устранения stale conflict.
+
+### Проверки
+
+Первые 7 meaningful DB tests запущены с API skeleton до реализации:
+**7/7 assertion failures** (prepare отсутствовал). Затем suite расширена:
+**21/21 PASS**. Проверены canonical replay, подготовка без эффекта, изменение
+payload/snapshot до receipt, closed schema/allowlist/IDs/date/refs, concurrent
+preparation, оба app roles SELECT/INSERT only и RLS, intent guard до первой
+receipt, kind/version semantics, guard после ожидания user lock, call identity,
+missing template receipt, crash после template commit и после occurrence commit,
+stale holder, stale ref на completable active объекте, committed completion
+replay с одной XP ledger записью. Upgrade 020→021 сохраняет уже claimed turn,
+повторная migration не применяет 021 заново.
+
+Отрицательные контроли **136–161: 26/26 caught assertion failures**, все
+исходники восстановлены. Whole payload/snapshot identity до receipt; closed
+input/envelope/payload; tool allowlist; derived command/device IDs; day/instant;
+ref target/version; transaction semantic hash/digest/command ID/step; проверка
+после user counter contention; owner RLS; запрет UPDATE/DELETE; main call ID;
+наличие template receipt; frozen occurrence settings; receipt kind/hash/version.
+Receipt kind проверен при искусственно совпавшем hash; hash — при верном kind;
+version — при верных kind/hash, чтобы фильтры не маскировали друг друга.
+Reports: `/tmp/ai-transport-controls-yrf4rxl8` (136–158),
+`/tmp/ai-transport-controls-q6ziu1xe` (159–161).
+
+Typecheck — PASS. Unit/contracts — **249/249**, 18 файлов PASS.
+Targeted secret scanner: 5 новых/затронутых runtime/SQL/test файлов,
+**0 находок** (значения не выводились). `git diff --check` — PASS.
+Полная integration suite — **434/434 PASS**, 40 файлов. После всех
+проверок созданный здесь disposable cluster остановлен.
+Logs: `/tmp/intents-test-first.log`, `/tmp/intents-unit-final.log`,
+`/tmp/intents-integration-final.log`.
+Disposable PostgreSQL `/tmp/system-command-intents-sep18-pg`, порт 55442,
+`intents_test`; реальные DB/env/secrets не использованы.
+Пятичасовой usage в начале scope 47%, перед завершением 59% (41% остаётся).
+Это общий account snapshot, не прогноз следующей задачи.
+
+### Историческая постановка T-04b-3b3 (core готов; adapter — следующий, см. раздел 15)
+
+Typed versioned checkpoint и durable runTurn/gateway restore/Telegram adapter.
+Сохранять assistant response перед tools; refs/read results/counters/results
+после шага. Не читать новую version вместо frozen ref и не предлагать новый
+intent для старого call ID. Mutation выполняется через executePreparedIntent;
+create occurrence продолжается через prepareQuestOccurrenceIntent. Claim=null
+не даёт разрешения на tools. Поддержать lease takeover во время model await,
+commit→crash→redelivery, bounded rounds/calls/mutations, terminal result и atomic
+reply/outbox+processed update. Existing inbox может держать outer transaction
+во время AI: проверить реальные locks и redesign, не вставить вложенные
+counter/turn lock order inversions. Store writes берут turn lock без counter;
+не брать counter внутри уже turn-locked transaction. Без live provider/deploy.
+
+Runtime gateway/bot пока не подключён; read refs/counters/transcript/retention/
+export и budgets здесь не решены. T-04b-3b2 завершён, T-04b-3b и T-04b-3 в целом
+остаются partial. Live requests и Telegram отправки не выполнялись.
+
+## 15. T-04b-3b3a — Durable AI core и gateway restore (2026-09-18)
+
+### Завершённый scope
+
+T-04b-3b3 разделён: **3b3a core** реализован, **3b3b Telegram adapter** следующий.
+Новые modules/ai/durable-turn.ts и gateway-state.ts; legacy gateway получает
+optional restore/durable context и snapshot method, legacy runTurn не изменён.
+Новая migration/public route/Telegram отправка не добавлены.
+
+Typed checkpoint durable-turn-1 сохраняет system, framed user message,
+frozen context/limits, transcript, pending cursor, counters, refs, failures,
+receipts и terminal result. JSON/schema/version/correlation checks до claim/HTTP;
+parseDurableCheckpoint экспортирован для adapter. Gateway refs не перенумеровываются,
+version не обновляется при restart. Snapshot/request копируются без shared objects.
+
+Round зарезервирован в awaiting checkpoint до каждого provider attempt;
+failed/interrupted попытки тоже считаются (семантика отличается от legacy
+successful rounds). Live lease renewed перед HTTP, default120s, expired не
+воскрешается. HTTP вне DB transactions. Assistant response сохраняется до tools
+с повторной lease проверкой после await; stale holder не выполняет эффекты.
+Gateway durable mutations идут через подготовленный intent/CommandBus fence.
+После tool фиксируются transcript/gateway/cursor; commit→crash восстановление
+читает already_applied receipt. Terminal finish атомарен в ai_turns, replay
+без provider/tools. Draft при outage/limits пуст; прежние receipts возвращаются.
+
+### Проверки
+
+Test-first API skeleton: **8/8 assertion failures**, зафиксированы в
+`/tmp/durable-core-test-first.log`. После реализации: **23/23 DB tests PASS**
+и **5/5 gateway codec unit PASS**. Проверены terminal replay, origin replay
+с новым clock/profile, assistant persist до effects, commit→crash и frozen
+create date, claim=null, takeover во время provider await и внутри CommandBus
+до completion (XP=0), persisted refs stale на active/completable объекте,
+completion replay (XP ledger одна), mutation/read call counters, reserved
+round cap до HTTP, pre-HTTP durable reservation, live renewal между rounds,
+unsafe response/duplicate IDs/unknown versions/extra fields/cursor/correlation,
+codec schema/duplicate occurrence IDs/refs gaps/counter consistency/copy.
+
+Counter tests специально crash **после фиксации первого tool result**, перед
+следующим provider reservation: иначе replay первого tool сам вернул бы счётчик
+и тест проходил бы без restore. Cursor guard дополнительно проверен напрямую
+codec: поздняя phase validation не должна маскировать отсутствие сравнения.
+
+Отрицательные контроли **162–186: 25/25 caught assertion failures**,
+исходники восстановлены. Response persist до effects; mutation/call counters;
+forward/reverse refs restore; cursor/results; unique call IDs; closed root и
+unsafe provider response; supported version; tool ID/name correlation; global
+tool cap; interrupted rounds bound; durable reservation до HTTP; renewal;
+gateway schema/duplicate occurrence/gaps/counter consistency/copy; durable
+complete command fence и create frozen intents; provider request copy.
+Control 174 снимает ОБА guards общего round bound (terminal stop и checkpoint
+counter limit), иначе второй guard отклонял бы попытку до HTTP и маскировал бы
+снятие первого. Проверка реально ловит дополнительный provider invocation.
+Reverse-map test проверяет read result напрямую до snapshot codec, чтобы
+проверка duplicated occurrence IDs не маскировала отсутствие восстановленной
+обратной карты. q2 остаётся q2 после ухода q1 из planned list.
+Reports: `/tmp/ai-transport-controls-tr2gejd7` (162–184),
+`/tmp/ai-transport-controls-6a27j1ok` (185–186).
+
+Typecheck — PASS. Unit/contracts — **254/254 PASS**, 19 файлов.
+Первый полный integration run — **455/455 PASS**, 41 файл; после двух новых
+reference/copy tests отдельная suite **23/23 PASS**; final full run
+**457/457 PASS**, 41 файл.
+Targeted secrets scan 5 новых/изменённых runtime/tests файлов: **0 находок**;
+значения не выводились. `git diff --check` — PASS.
+Logs: `/tmp/durable-core-unit-final.log`,
+`/tmp/durable-core-integration-final.log` (455),
+`/tmp/durable-core-integration-final-457.log` (final).
+Disposable cluster `/tmp/system-durable-core-sep18-pg`, port55443, durable_test;
+создан отдельно, реальные DB/env/secrets не использованы. После final run
+этот disposable cluster остановлен. Usage scope start60%, после controls77%, final80% (20% осталось);
+account snapshot, не гарантия расхода следующего этапа.
+
+### Следующий законченный scope — T-04b-3b3b
+
+Подключить inbox к openDurableTurn/resumeDurableTurn; сейчас composeAiReply
+вызван из outer transaction с locked update во время model HTTP. Не завернуть
+новое core в тот же lock: short claiming/identity/start и отдельный terminal
+atomic reply/outbox+processed update. Scoped origin bot+update+owner, без нового
+turn ID/нового assistant при redelivery. Проверить concurrent dispatch/restart/
+takeover и terminal replay. Claim=null не является success: readTurn отличает
+held/exhausted/finished race; при exhausted/invalid state нужен receipt-based
+fallback/dead-letter, а не вечный retry или обещание «готово». Core пока не
+решает exhausted notifications/Telegram outbox acknowledgement. Сохранить
+manual commands, tenant isolation, existing send dedupe/lease и lock order.
+
+Ограничения: local round/call bounds не monetary/provider fallback budget (3c).
+Checkpoint data private, не outbound context целиком; egress-1 всё ещё не
+анонимизирует free text. Oversized state fail closed, human fallback — adapter.
+Real provider/Telegram/live clients/deploy не проверялись. Bot по-прежнему
+legacy; вся T-04b-3b3/T-04b-3b/T-04b-3 не объявлена готовой.

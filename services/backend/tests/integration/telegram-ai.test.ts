@@ -217,6 +217,32 @@ describe('свободный текст через модель', () => {
 });
 
 describe('мёртвая модель', () => {
+  it('сохраняет подтверждение записи при отказе модели после commit', async () => {
+    const from = sender();
+    await deliver('/start', from);
+    await run(from);
+    await deliver('запиши английский', from);
+    let rounds = 0;
+    const provider: AiProvider = { name: 'отказ после commit', generateTurn: async () => {
+      if (rounds++ === 0) return { ...wantsCreate(), text: 'STALE_DRAFT' };
+      throw new Error('PRIVATE_SENTINEL');
+    } };
+    await run(from, provider);
+    const reply = await lastReply(from);
+    expect(reply.kind).toBe('ai_unavailable');
+    expect(reply.body).toContain('Записано:\n• Английский — записано');
+    expect(reply.body).toContain('ИИ сейчас недоступен');
+    expect(reply.body).toContain('/today');
+    expect(reply.body).not.toMatch(/PRIVATE_SENTINEL|STALE_DRAFT|пределе шагов/);
+    expect(await questTitles(from)).toEqual(['Английский']);
+    expect(rounds).toBe(2);
+    const updates = await ownerDb.query('SELECT processed_at FROM telegram_updates WHERE update_id = $1', [nextUpdateId]);
+    expect(updates.rows[0]?.processed_at).not.toBeNull();
+    await run(from, provider);
+    expect(rounds).toBe(2);
+    expect(await questTitles(from)).toEqual(['Английский']);
+  });
+
   const broken: AiProvider = {
     name: 'сломанная',
     generateTurn: async () => {

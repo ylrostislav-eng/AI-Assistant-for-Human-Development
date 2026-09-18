@@ -312,10 +312,15 @@ function renderTurn(result: TurnResult): string {
     // сделано не всё, и куда посмотреть. «Готово» модели при этом остаётся
     // выше — переписывать её слова мы не можем, но рядом стоит правда сервера.
     parts.push(
-      'Не получилось выполнить всё, о чём написано выше. Отправьте /today, чтобы увидеть, как есть сейчас.',
+      'Не получилось выполнить все запрошенные действия. Отправьте /today, чтобы увидеть, как есть сейчас.',
     );
   }
-  if (result.stopReason !== 'answered') {
+  if (result.stopReason === 'provider_error') {
+    parts.push(result.receipts.length > 0
+      ? 'ИИ сейчас недоступен. Записанные изменения показаны выше; дальнейшие действия не подтверждены.'
+      : 'ИИ сейчас недоступен. Изменения не подтверждены.');
+    parts.push('Проверьте /today. Работает и ручное создание: /new Английский 30м.');
+  } else if (result.stopReason !== 'answered') {
     parts.push('Ответ оборван на пределе шагов. Спросите короче или по одному делу.');
   }
   if (parts.length === 0) {
@@ -361,7 +366,7 @@ async function composeAiReply(
     };
   }
 
-  return { kind: 'ai_reply', body: renderTurn(result) };
+  return { kind: result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply', body: renderTurn(result) };
 }
 
 /**

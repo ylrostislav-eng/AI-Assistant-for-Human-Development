@@ -6,6 +6,9 @@ import type { Database } from '../../shared/db/pool.ts';
 import { withTenantTransaction } from '../../shared/db/tenant.ts';
 import { createValidator, describeFailure, type CompiledSchema } from '../../shared/schema/validator.ts';
 import { userDayAt } from '../../shared/time/user-day.ts';
+import { parseGatewayState, type GatewayState } from './gateway-state.ts';
+import { prepareCommandIntent, prepareQuestOccurrenceIntent, executePreparedIntent, type IntentSnapshot } from './command-intents.ts';
+import type { TurnLease } from './turn-store.ts';
 
 export type { ToolCall } from './provider.ts';
 
@@ -58,6 +61,7 @@ export interface ToolGateway {
   invoke(call: ToolCall): Promise<ToolResult>;
   receipts(): readonly CommandReceiptSummary[];
 }
+export interface RestorableToolGateway extends ToolGateway { snapshot(): GatewayState }
 
 export interface GatewayLimits {
   /** Сколько вызовов инструментов допускается за ход. */
@@ -119,15 +123,21 @@ export function createToolGateway(options: {
   readonly turnId: string;
   readonly limits?: Partial<GatewayLimits>;
   readonly now?: () => Date;
-}): ToolGateway {
+  readonly restore?: GatewayState;
+  readonly durable?: { readonly lease: () => TurnLease; readonly context: Omit<IntentSnapshot, 'refs'> };
+}): RestorableToolGateway {
   const limits: GatewayLimits = { ...DEFAULT_LIMITS, ...options.limits };
   const now = options.now ?? ((): Date => new Date());
 
   const byRef = new Map<string, QuestSnapshot>();
   const refByOccurrence = new Map<string, string>();
-  const receipts: CommandReceiptSummary[] = [];
-  let calls = 0;
-  let mutations = 0;
+  const restored = parseGatewayState(options.restore ?? { refs: {}, receipts: [], calls: 0, mutations: 0 });
+  for (const [ref, snapshot] of Object.entries(restored.refs)) {
+    byRef.set(ref, { ...snapshot }); refByOccurrence.set(snapshot.occurrenceId, ref);
+  }
+  const receipts: CommandReceiptSummary[] = [...restored.receipts];
+  let calls = restored.calls;
+  let mutations = restored.mutations;
 
   /**
    * Ссылка закрепляется за заданием на весь ход. Выдавать её заново по порядку
@@ -163,7 +173,7 @@ export function createToolGateway(options: {
       kind,
       aggregate_id: target?.id ?? null,
       expected_version: target?.expectedVersion ?? null,
-      client_created_at: now().toISOString(),
+      client_created_at: options.durable?.context.clock ?? now().toISOString(),
       depends_on_command_id: null,
       payload,
     };
@@ -244,6 +254,20 @@ export function createToolGateway(options: {
   }
 
   async function createQuest(call: ToolCall, args: CreateQuestArguments): Promise<ToolResult> {
+    if (options.durable) {
+      const durable = options.durable;
+      const spec = { success_rule: args.success_rule, unit: args.unit,
+        ...(args.duration_seconds === null ? {} : { duration_seconds: args.duration_seconds }),
+        ...(args.amount === null ? {} : { amount: args.amount }) };
+      const prepared = await prepareCommandIntent(options.database, options.userId, durable.lease(), {
+        callId: call.id, envelope: envelope('create_quest_template', `${call.id}:template`, { title: args.title, normal_spec: spec }),
+        snapshot: { ...durable.context, refs: {} }, questRef: null,
+      });
+      const template = await executePreparedIntent(options.database, options.userId, durable.lease(), prepared.step);
+      if (template.status !== 'committed' && template.status !== 'already_applied') return report(call, template, { title: args.title });
+      const occurrence = await prepareQuestOccurrenceIntent(options.database, options.userId, durable.lease(), call.id);
+      return report(call, await executePreparedIntent(options.database, options.userId, durable.lease(), occurrence.step), { title: args.title });
+    }
     const profile = await withTenantTransaction(options.database, options.userId, async (client) =>
       client.query<{ timezone: string; day_boundary_minutes: number }>(
         'SELECT timezone, day_boundary_minutes FROM user_profiles WHERE user_id = $1',
@@ -303,24 +327,24 @@ export function createToolGateway(options: {
       );
     }
 
-    const outcome = await executeEnvelope(
+    const completionEnvelope = envelope(
+      'complete_quest', `${call.id}:complete`, {
+        ...(args.variant === null ? {} : { variant: args.variant }),
+        ...(args.actual_duration_seconds === null ? {} : { actual_duration_seconds: args.actual_duration_seconds }),
+        ...(args.actual_amount === null ? {} : { actual_amount: args.actual_amount }),
+      }, { id: snapshot.occurrenceId, expectedVersion: snapshot.version },
+    );
+    let outcome: CommandOutcomeReport;
+    if (options.durable) {
+      const durable = options.durable;
+      const prepared = await prepareCommandIntent(options.database, options.userId, durable.lease(), {
+        callId: call.id, envelope: completionEnvelope, snapshot: { ...durable.context, refs: { [args.quest_ref]: { ...snapshot } } }, questRef: args.quest_ref,
+      });
+      outcome = await executePreparedIntent(options.database, options.userId, durable.lease(), prepared.step);
+    } else outcome = await executeEnvelope(
       options.database,
       options.userId,
-      envelope(
-        'complete_quest',
-        `${call.id}:complete`,
-        {
-          ...(args.variant === null ? {} : { variant: args.variant }),
-          ...(args.actual_duration_seconds === null
-            ? {}
-            : { actual_duration_seconds: args.actual_duration_seconds }),
-          ...(args.actual_amount === null ? {} : { actual_amount: args.actual_amount }),
-        },
-        // Версия — из снимка, под которым выдана ссылка, а не из аргументов
-        // модели. Задание, завершённое кнопкой минуту назад, даст честный
-        // конфликт вместо второй отметки.
-        { id: snapshot.occurrenceId, expectedVersion: snapshot.version },
-      ),
+      completionEnvelope,
     );
 
     const version = outcome.result?.['version'];
@@ -333,6 +357,7 @@ export function createToolGateway(options: {
   return {
     definitions: () => toolCatalog(),
     receipts: () => receipts,
+    snapshot: () => parseGatewayState({ refs: Object.fromEntries(byRef), receipts, calls, mutations }),
 
     async invoke(call: ToolCall): Promise<ToolResult> {
       const tool = findTool(call.name);

@@ -1,6 +1,6 @@
 import type { CommandReceiptSummary, ToolGateway } from './gateway.ts';
 import { systemPrompt, untrustedBlock } from './prompt.ts';
-import type { AiMessage, AiProvider } from './provider.ts';
+import type { AiMessage, AiProvider, AiTurnResponse } from './provider.ts';
 
 /**
  * Один ход разговора.
@@ -43,7 +43,7 @@ export interface TurnResult {
   readonly receipts: readonly CommandReceiptSummary[];
   readonly failures: readonly TurnFailure[];
   readonly rounds: number;
-  readonly stopReason: 'answered' | 'round_limit' | 'call_limit';
+  readonly stopReason: 'answered' | 'round_limit' | 'call_limit' | 'provider_error';
 }
 
 export async function runTurn(options: {
@@ -77,11 +77,16 @@ export async function runTurn(options: {
   let text = '';
 
   while (rounds < limits.maxRounds) {
-    const response = await options.provider.generateTurn({
-      system,
-      messages,
-      tools: options.gateway.definitions(),
-    });
+    // Only provider failure is handled here. A previous command may already
+    // be committed in its own transaction: return its receipt even if the
+    // next model request fails. Do not retry the turn or show the old draft.
+    const request = { system, messages, tools: options.gateway.definitions() };
+    let response: AiTurnResponse;
+    try {
+      response = await options.provider.generateTurn(request);
+    } catch {
+      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };
+    }
     rounds += 1;
     text = response.text;
 

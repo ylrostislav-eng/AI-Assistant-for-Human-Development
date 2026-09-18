@@ -23,6 +23,7 @@ import {
   PayloadMismatchError,
   type CommandHandler,
   type CommandRequest,
+  type CommandTurnFence,
 } from '../../shared/commands/bus.ts';
 import { commandEnvelopeSchema, type CommandEnvelope } from '../../shared/commands/envelope.ts';
 import {
@@ -228,6 +229,20 @@ function rejection(httpStatus: number, error: string, detail?: string): CommandO
   return { status, httpStatus, error, ...(detail === undefined ? {} : { detail }) };
 }
 
+/** Shared normalization for execution AND server-prepared intents. Throws on invalid input. */
+export function buildEnvelopeCommand(userId: string, envelope: CommandEnvelope): { command: CommandRequest; handler: CommandHandler } {
+  const definition = COMMANDS.get(envelope.kind);
+  if (definition === undefined || envelope.depends_on_command_id !== null) throw new InvalidCommandPayloadError('Unsupported command');
+  assertPayloadMatchesSchema(envelope.kind, envelope.payload);
+  const command: CommandRequest = {
+    userId, commandId: envelope.command_id, kind: envelope.kind, schemaVersion: envelope.schema_version,
+    targetId: resolveTarget(envelope, definition), expectedVersion: resolveExpectedVersion(envelope),
+    dependsOnCommandId: envelope.depends_on_command_id, payload: envelope.payload,
+  };
+  assertVersionPolicy(command, definition);
+  return { command, handler: definition.build(command) };
+}
+
 /**
  * Выполнение одной команды: проверка контракта, политика цели и версии,
  * собственно действие и разбор отказов.
@@ -240,6 +255,7 @@ export async function executeEnvelope(
   database: Database,
   userId: string,
   envelope: CommandEnvelope,
+  turnFence?: CommandTurnFence,
 ): Promise<CommandOutcomeReport> {
   const definition = COMMANDS.get(envelope.kind);
   if (definition === undefined) {
@@ -257,19 +273,7 @@ export async function executeEnvelope(
   let command: CommandRequest;
   let handler: CommandHandler;
   try {
-    assertPayloadMatchesSchema(envelope.kind, envelope.payload);
-    command = {
-      userId,
-      commandId: envelope.command_id,
-      kind: envelope.kind,
-      schemaVersion: envelope.schema_version,
-      targetId: resolveTarget(envelope, definition),
-      expectedVersion: resolveExpectedVersion(envelope),
-      dependsOnCommandId: envelope.depends_on_command_id,
-      payload: envelope.payload,
-    };
-    assertVersionPolicy(command, definition);
-    handler = definition.build(command);
+    ({ command, handler } = buildEnvelopeCommand(userId, envelope));
   } catch (error) {
     if (error instanceof TargetMismatchError) {
       return rejection(400, 'target_mismatch', error.message);
@@ -284,7 +288,7 @@ export async function executeEnvelope(
   }
 
   try {
-    const receipt = await executeCommand(database, command, handler);
+    const receipt = await executeCommand(database, command, handler, turnFence);
     return {
       status: receipt.duplicate ? 'already_applied' : 'committed',
       httpStatus: 200,

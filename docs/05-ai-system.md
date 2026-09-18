@@ -12,7 +12,7 @@
 
 **Есть (T-04b-1):** HTTP-транспорт двух форматов и ограниченный fallback в
 `services/backend/src/modules/ai/providers/http.ts`. Проверен подставным HTTP
-и совместно с `runTurn`; к боту пока не подключён. Живые пробы шлюза до этого
+и совместно с `runTurn`; позже подключён к боту (handoff 3.22). Живые пробы шлюза до этого
 среза описаны в handoff 6.1, они не заменяют живую проверку нового адаптера.
 
 **Отличие от описанного ниже:** объекты называются ссылками, выданными сервером
@@ -21,10 +21,22 @@
 это заменено ссылкой. Ролей (Coach, Goal Planner, Analyst) пока нет: подсказка
 одна. Потока ответа нет: первому каналу — боту — он не нужен.
 
-**Нет:** runtime-конфигурации и подключения поставщика к боту, политики исходящих
-данных, сохранения разговоров и ходов, памяти, ролей, проверок расхода,
-GoalPlanDraft, reviews. Транспортная фильтрация полей не обезличивает содержимое
-сообщений: это отдельный обязательный следующий срез T-04b-2.
+**Добавлено после T-04b-1:** runtime-конфигурация, свободный текст бота и
+`egress-1` (handoff 3.21/3.22/3.31). Egress проверяет разрешённые поля и
+обрамление, но не удаляет health/имена из пользовательского текста или titles;
+полное обезличивание остаётся открытым. Runtime routing сейчас выводит протокол
+из model prefix; ограничения текущей реализации описаны в handoff 11.
+
+**T-04b-3a:** при ошибке `provider.generateTurn` `runTurn` возвращает
+`stopReason: provider_error`, пустой `text`, ранее полученные `receipts` и
+`failures`. `rounds` считает только полученные ответы. Нет дополнительного
+запроса или повтора команд; ошибки gateway не перехватываются этим обработчиком.
+Бот показывает квитанции и ручной путь, не черновик предыдущего раунда.
+
+**Нет:** подключения turn store к разговорам/ходам и восстановления после process crash,
+памяти, ролей, проверок расхода, GoalPlanDraft, reviews. Следующие срезы —
+T-04b-3b2/3 command fencing и durable loop (store готов в 3b1), T-04b-3c budget reservations. Этот механизм
+сохраняет результат при отказе провайдера в работающем процессе, а не на диске.
 
 ## 1. Архитектура диалога
 
@@ -76,7 +88,9 @@ Domain не зависит от OpenAI-specific response objects. ProviderCapabi
   `fetch` подменяется только для тестов; новых зависимостей нет.
 - Обязательные server-only настройки: `protocol`, `baseUrl` (HTTPS с версией
   API, без credentials/query/fragment), `apiKey`, `model`, `timeoutMs`,
-  `maxOutputTokens`, `maxResponseBytes`. Env wiring пока отсутствует.
+  `maxOutputTokens`, `maxResponseBytes`. Runtime env wiring добавлен
+  Клодом через `config.ts`/`providers/routing.ts` (handoff 3.21); протокол
+  там определяется семейством модели, explicit override пока отсутствует.
   API key уходит только в заголовке; redirects запрещены.
 - Один HTTP-вызов ограничен до 60 секунд (включая чтение тела), генерация —
   до 16 384 output tokens, ответ — до 2 MiB, запрос — до 256 KiB.
@@ -98,8 +112,8 @@ Domain не зависит от OpenAI-specific response objects. ProviderCapabi
 - Смена провайдера переводит уже полученные результаты инструментов в другой
   wire format. Она не начинает `runTurn` заново и не повторяет committed команды.
 
-Перед эксплуатацией нужны T-04b-2/3/4 из плана: политика данных, устойчивые ходы,
-учёт расходов, runtime-конфигурация и живая проверка. `store: false` не доказывает
+Перед полной приёмкой нужны остатки T-04b-2/3/4: обезличивание содержимого,
+устойчивые ходы, учёт расходов и живая проверка; runtime уже реализован. `store: false` не доказывает
 отсутствие хранения у посредника. Транспорт принимает уже разрешённые данные;
 проверка допустимости содержимого должна происходить до каждого вызова,
 включая повтор с tool results и fallback.
@@ -246,3 +260,153 @@ Prompt injection обрабатывается архитектурой: огра
 Mini App получает SSE/structured cards; бот — короткие сообщения/кнопки и ссылку на полный PlanDiff. Не отправлять отдельное Telegram сообщение на каждый token. Callback подтверждает существующий versioned proposal, а не произвольный текст модели. При следующем входе Mini App подтягивает committed изменения из бота. Пользователь видит одинаковые факты и один receipt независимо от канала.
 
 LLM не знает о «выданном XP» до receipt Progression Engine. Пока P3 не реализован, UI/бот сообщают только о сохранённом факте. Telegram данные, calendar titles и import notes остаются недоверенным content; ни bot username, ни forward header не расширяют tool permissions. Realtime не является зависимостью текстового ассистента или voice notes.
+
+## 13. Durable turn storage — T-04b-3b1
+
+`turn-store.ts` реализует внутренние `openTurn`, `readTurn`, `claimTurn`,
+`saveTurnCheckpoint`, `renewTurnLease`, `finishTurn` на PostgreSQL.
+Не заменяет `runTurn` и пока не вызывается ботом. Полный resume ещё не реализован.
+
+`openTurn` принимает server-derived UUID и origin, semantic input, версии,
+initialCheckpoint и maxAttempts. Первое обращение сохраняет состояние;
+повтор с тем же input/versions возвращает прежний checkpoint. Изменённые
+input/source/versions/maxAttempts для существующей identity отклоняются.
+InitialCheckpoint при повторе не переписывает ранее сохранённое состояние.
+
+Claim атомарно выдаёт один `{id, token, revision}`. Save/renew требуют этот
+handle и возвращают новый с увеличенной revision; caller обязан заменить
+старый handle. Finish сохраняет конечный checkpoint и снимает аренду.
+Если token/revision устарели или lease истёк, запись отклоняется `lost_lease`.
+Аренда проверяется после получения row lock, чтобы ожидание блокировки не
+превратило expired lease в разрешение записи. Clock сервера приложения не
+определяет право владения. В transaction нет model/Telegram HTTP calls.
+
+`claimTurn → null` означает отсутствие разрешения исполнять: другой holder,
+finished, exhausted attempts или нет строки. Нельзя после null выполнять tools
+или считать ход успешно законченным. Состояние читается отдельно; политика
+обработки exhausted/lease expiry и notifications принадлежит resume adapter.
+
+**Граница защиты T-04b-3b1:** fenced только checkpoint write. T-04b-3b2a
+добавляет trusted optional fence для CommandBus (раздел 14); legacy gateway
+пока не передаёт его; поэтому новый store не подключён
+к существующему циклу. Следующий T-04b-3b2 — persist exact prepared command
+intent и проверить turn lease в той же transaction, что domain command.
+Только затем T-04b-3b3 — durable runTurn, restored gateway refs и bot hookup.
+Каждому checkpoint_version нужна закрытая semantic schema; opaque JSON storage
+не доказывает, что index/counters/refs/transcript согласованы.
+
+## 14. Turn fencing команд — T-04b-3b2a
+
+`executeCommand(database, request, handler, turnFence?)` и
+`executeEnvelope(database, userId, envelope, turnFence?)` принимают внутренний
+server-only `{id, token, revision}`. Это не поле public envelope, не AI argument
+и не доказательство Telegram identity. Отсутствие fence сохраняет прежний
+manual/HTTP путь; durable gateway обязан передавать fence каждой своей команде.
+Бот и текущий gateway ещё не используют эту возможность.
+
+Порядок в одной транзакции: tenant context → user_change_counters row lock →
+ai_turns row lock → проверка running/token/revision/expiry по PostgreSQL clock →
+проверка прежней receipt → domain handler/XP ledger/receipt/outbox → commit.
+Проверка аренды происходит после ожидания обеих блокировок. Turn row остаётся
+заблокированной до commit/rollback: takeover не может обогнать уже разрешённый
+handler. Истечение времени во время handler не отменяет начатую транзакцию;
+новый claim ждёт её завершения. External HTTP под этими locks запрещён.
+
+`LostTurnLeaseError.code = lost_turn_lease` выходит наружу и не превращается
+в successful tool result. Ошибка откатывает sequence и все эффекты. Даже повтор
+committed команды проверяет fence до receipt lookup; новый владелец может
+получить прежнюю receipt без второго эффекта. Duplicate rollback освобождает
+turn lock перед отдельным receipt read; это не новое разрешение на tools.
+
+Это защищает владение, но ещё не связывает шаг с сохранённым intent. Следующий
+T-04b-3b2b сохраняет exact validated envelope и проверяет его в той же command
+transaction. Нельзя подключать opaque checkpoint как готовый durable resume.
+
+## 15. Prepared команды — T-04b-3b2b
+
+`modules/ai/command-intents.ts` предоставляет server-only API:
+
+- `prepareCommandIntent(db, userId, lease, input)` — validate/copy до SQL,
+  live lease → append-only запись. Допустимы только create_quest_template и
+  complete_quest; envelope/payload нормализуются общим buildEnvelopeCommand.
+- `readCommandIntent(db, userId, turnId, step)` — вернуть private stored intent,
+  без разрешения выполнять tools. Digest и schema перепроверяются при чтении.
+- `prepareQuestOccurrenceIntent(db, userId, lease, callId)` — load prepared
+  template + matching committed receipt; derive occurrence из frozen date/zone
+  и прежнего template ID. До commit шаблона — intent_not_ready.
+- `executePreparedIntent(db, userId, lease, step)` — load сохранённый envelope
+  и передать `{...lease, intent:{step,hash}}` в executeEnvelope/CommandBus.
+
+Input закрыт: callId, envelope, snapshot, questRef. Snapshot содержит canonical
+UTC clock, localDate, IANA timezone, dayBoundaryMinutes и ≤20 refs qN с
+occurrenceId/version/title. Сохранённая дата должна совпадать с userDayAt(clock,
+timezone,boundary). Command ID/device ID derived от turn; client_created_at равен
+frozen clock. Complete требует selected ref с теми же target/version; current
+version не перечитывается ради успешного выполнения. Runtime gateway обязан
+получить original snapshot из доверенного чтения, а не параметров модели.
+
+Canonical whole-document hash отличает изменённый input даже без прежней
+receipt. Повтор одинакового input возвращает stored intent. Preparation сохраняет
+неизменяемый документ и не увеличивает turn revision; токен/ревизия нужны снова
+для execution. Один call ID не может сменить основную команду; occurrence —
+вторая derived phase того же create call. Caller не передаёт новый occurrence
+payload. Нельзя реконструировать template proposal по новой модели после crash.
+
+В command transaction после user counter/turn locks и lease guard проверяются
+turn/step/intent hash/command ID/semantic hash v2. Mismatch бросает фиксированную
+`CommandIntentMismatchError` (intent_mismatch), откатывает seq и все effects,
+не маскируется sync adapter. Все checks до duplicate receipt и handler/XP.
+Load до этой транзакции не является preflight permission: guard выполняется снова.
+
+Prepared storage не сохраняет transcript, get_today_quests snapshots, tool results,
+round/call/mutation counters, budgets или terminal reply. Current gateway/bot пока
+не использует API. Следующий T-04b-3b3 добавляет typed checkpoint и durable loop;
+всей родительской T-04b-3b готовности здесь нет.
+
+## 16. Durable core — T-04b-3b3a
+
+`openDurableTurn(options)` фиксирует system prompt, framed user message,
+clock/localDate/timezone/boundary и limits в initial typed checkpoint. Origin
+содержит channel/scope/request ID; повтор сохраняет исходный snapshot, а
+изменение message/limits/maxAttempts конфликтует. Default rounds=6,
+tool calls=12, gateway calls=12, mutations=4, max attempts=5.
+
+`resumeDurableTurn({database,userId,turnId,provider,leaseMs?})`:
+
+1. Version/schema/transcript validation; finished replay отдаёт stored result.
+2. Claim live lease; null → `{status: busy}`, без provider/tools.
+3. Restore refs/receipts/counters из checkpoint. Resume pending tool cursor,
+   а не новый запрос модели для уже сохранённого assistant response.
+4. Перед каждым HTTP зарезервировать round и checkpoint awaiting; renew live
+   lease (default 120s). Ни один DB transaction не охватывает provider HTTP.
+5. После HTTP проверить/скопировать response в typed transcript и сохранить
+   assistant+cursor **до** любого tool. Save повторно проверяет lease после await.
+6. Последовательно invoke tools; durable mutations через prepared intents и
+   command fence. После результата сохранить tool message/gateway state/cursor.
+7. Finish terminal checkpoint/result atomically. Outage возвращает прежние
+   receipts с пустым draft; round/call limit тоже не публикует unconfirmed draft.
+
+`parseDurableCheckpoint` и `parseGatewayState` проверяют закрытые схемы,
+finite/JSON safety, cursor/results/counter consistency, contiguous stable refs,
+unique IDs и supported versions. Storage exceptions не маскируются как provider
+error. Clone snapshot/request защищает от изменения caller/provider объектов.
+
+Gateway.restore восстанавливает уже earned receipts и calls/mutations. Read
+results сохраняются перед следующим tool; crash до фиксации read result может
+повторить read, потому что его вывод ещё не стал durable input следующей команды.
+Crash после domain commit до tool checkpoint повторяет прежнюю command ID,
+получает already_applied receipt и не повторяет XP. Two-step create проходит
+через prepareQuestOccurrenceIntent и frozen date/zone. Explicit новый read
+может обновить ref version; restart сам этого не делает.
+
+`busy` — **не готовый ответ пользователю**: held lease, finished race или exhausted
+attempts различаются отдельным readTurn. Следующий Telegram adapter обязан
+проверить это и организовать retry/fallback; не маркировать update processed
+после null claim. Invalid/oversized state останавливает core безопасной ошибкой,
+но ещё не реализует human notification. Renewal не оживляет expired lease;
+слишком длинный HTTP/истечение аренды может остановить stale caller.
+
+Core standalone, существующий bot пока вызывает legacy runTurn. T-04b-3b3b
+должен снять outer inbox transaction вокруг HTTP и atomically связать terminal
+result с outbox/processed update. Atomic monetary/provider attempt budget,
+fallback accounting, live clients и deploy не входят в этот срез.

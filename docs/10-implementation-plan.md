@@ -1,6 +1,6 @@
 # 10. План разработки Telegram-системы
 
-Актуально: 2026-09-17. Этот план заменяет прежнюю последовательность iOS. Исторические таблицы сохранены в [архиве](archive/pre-telegram-2026-09-16.txt); их незакрытые Mac-гейты не блокируют Telegram. Статус кода — [13](13-handoff.md), требования платформы — [14](14-telegram-platform.md), исправления — [15](15-backend-review.md).
+Актуально: 2026-09-18. Этот план заменяет прежнюю последовательность iOS. Исторические таблицы сохранены в [архиве](archive/pre-telegram-2026-09-16.txt); их незакрытые Mac-гейты не блокируют Telegram. Статус кода — [13](13-handoff.md), требования платформы — [14](14-telegram-platform.md), исправления — [15](15-backend-review.md).
 
 ## 1. Как исполнять
 
@@ -88,7 +88,17 @@ Exit: Goal → scheduled quest → сохранённая Activity; ручной
 | T-04a ✔ | Каталог, ToolGateway, runTurn, prompt `coach-1` | Закрытые схемы, ссылки/версии, пределы; DB tests и отрицательные контроли пройдены |
 | T-04b-1 ✔ | HTTP `openai-chat` / `anthropic-messages`, bounded fallback | Wire round-trip, errors/time/bytes, tool results между провайдерами; mocked HTTP, runTurn smoke, отрицательные контроли. Runtime/live wiring не входит |
 | T-04b-2 ✔ | Versioned outbound privacy policy для system/user/tool context | Явный allowlist, health/raw notes/реальные имена не уходят, разрешённые факты обезличиваются; проверка каждого раунда и fallback, deny-by-default для непроверенного содержимого; негативные fixtures и снятие защиты |
-| T-04b-3 **следующая** | Durable turns/tool results + бюджет каждой provider attempt | Один turn на update ID, RLS, lease/fencing, восстановление после commit→crash без нового эффекта; receipts доступны при отказе модели, суммы лимитов атомарны, неизвестная стоимость не считается нулём |
+| T-04b-3 ◑ | Durable turns/tool results + бюджет каждой provider attempt | Один turn на update ID, RLS, lease/fencing, восстановление после commit→crash без нового эффекта; receipts доступны при отказе модели, суммы лимитов атомарны, неизвестная стоимость не считается нулём |
+| T-04b-3a ✔ | Квитанции при отказе следующего раунда в живом процессе | Provider failure возвращает receipts/failures и безопасный статус; бот показывает committed изменения, нет turn retry или stale draft; DB regression и снятие защиты |
+| T-04b-3b ◑ | Durable turn/tool checkpoints и resume | Unique update/turn identity, RLS, versioned state, lease/fencing; после commit→process crash возвращаются квитанции и ссылки, повтор не исполняет другой tool intent |
+| T-04b-3b1 ✔ | Versioned PostgreSQL turn store, миграция 020 | Idempotent origin/input, concurrent open/claim, lease+revision CAS после row lock, bounded attempts, tenant RLS, private JSON validation; live bot не подключён |
+| T-04b-3b2 ✔ | Prepared tool intents и CommandBus fencing | Exact canonical envelopes persisted до execution; stale turn holder не меняет domain после takeover; crash между template и occurrence использует прежние day/settings/envelope |
+| T-04b-3b2a ✔ | Transaction-level turn fencing | Trusted optional fence в CommandBus/executeEnvelope; user counter → turn row lock → live token/revision/expiry → receipt/handler; 11 DB tests и 11 отрицательных контролей; bot пока не подключён |
+| T-04b-3b2b ✔ | Persisted prepared intents | Exact canonical envelopes и refs/target/version/clock/day/settings до исполнения; intent validation в command transaction; crash между template и occurrence и после commit использует прежний intent |
+| T-04b-3b3 ◑ | Durable loop и Telegram resume | Assistant response до tools, restored refs/counters/results и checkpoints после каждого шага; commit→crash→redelivery сохраняет прежние intent/receipts; reply+processed update atomic |
+| T-04b-3b3a ✔ | Durable core и gateway restore | Typed checkpoint durable-turn-1; assistant до tools; restored refs/results/counters; intent-fenced mutations; pre-HTTP reserved rounds и renewal; crash/takeover tests; бот пока legacy |
+| T-04b-3b3b **следующая** | Telegram durable adapter | Scoped turn origin bot+update, short DB transactions вне model HTTP, claim=null handling/retry/exhaustion, terminal reply/outbox+processed update atomic; concurrent redelivery tests |
+| T-04b-3c | Атомарный бюджет provider attempts | Лимиты резервируются до HTTP, fallback учитывается отдельно, неизвестный usage не ноль; concurrent requests не превышают лимит; expiry/reconciliation и отказ сохраняют ручной путь |
 | T-04b-4 ◑ | Runtime config и свободный текст бота **сделаны вне очереди** (handoff 3.21, 3.22); bounded live acceptance — нет | Base/protocol/model/key из secret/config, первичная/резервная модели явно выбраны; synthetic live tool cycle, отказ/timeout/лимит; `/new`, `/today`, кнопки работают без AI; policy и durable budget из предыдущих срезов обязательны |
 
 T-04b в целом пока **не выполнена**. Только после её приёмки расширять AI
@@ -170,6 +180,6 @@ Fixtures: два tenants, два клиента одного пользоват�
 
 ## 12. Первый запрос следующей модели
 
-> Прочитай AGENTS.md, docs/13-handoff.md (включая 6.1), docs/00-product-and-decisions.md и docs/05-ai-system.md. Выполни T-04b-2: версионированную политику исходящих данных перед каждым вызовом модели, включая tool results и fallback. Не считай выбор JSON-полей или prompt инструкцию обезличиванием текста. Начни с fixtures на запрещённые поля/health/raw notes/реальные имена и разрешённые обезличенные данные; затем реализация и отрицательные контроли. Не подключай свободный текст бота до durable turns и бюджета T-04b-3. Сохрани ручные команды и существующий ToolGateway, проверь typecheck/unit/contracts и затронутые DB integration на synthetic DB; запиши точные результаты и оставшиеся ограничения в handoff.
+> Прочитай AGENTS.md и docs/13-handoff.md (6, 6.1, 14, 15), docs/00/02/05/10/14. Выполни T-04b-3b3b: подключи Telegram inbox к готовому durable core и сделай atomic terminal reply/outbox+processed update. Legacy inbox сейчас держит outer transaction во время модели; не оборачивай новое core в тот же длительный lock. Сохрани ручные команды и scoped origin bot+update+owner. Используй openDurableTurn/resumeDurableTurn, не собирай заново уже сохранённые context/refs/intent. Claim=null/busy не означает processed: различай held/finished race/exhausted по store. Проверь restart/commit→crash→redelivery, concurrent dispatch/takeover, terminal replay и receipt-based fallback при exhaustion, outage, invalid checkpoint. Provider/Telegram HTTP не под DB row locks. Бюджеты 3c, реальная live модель и deployment остаются отдельно; без секретов и сетевых отправок. Отрицательные контроли обязательны; не отмечай всю T-04b готовой по одному пути.
 
 Сроки не обещаются по количеству таблиц: полезную первую вертикаль выпускаем отдельно от полного MVP, затем измеряем фактическую скорость. Mac больше не входит в критический путь Telegram.

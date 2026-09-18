@@ -9,6 +9,9 @@ import type {
 } from '../../src/modules/ai/gateway.ts';
 import { runTurn } from '../../src/modules/ai/turn.ts';
 import { scriptedProvider } from '../helpers/fake-provider.ts';
+import type { AiProvider } from '../../src/modules/ai/provider.ts';
+import { AiProviderError } from '../../src/modules/ai/providers/http.ts';
+import { EgressPolicyError } from '../../src/modules/ai/egress.ts';
 
 /**
  * Цикл хода.
@@ -56,6 +59,54 @@ function wantsTool(name: string, args: Record<string, unknown>, id = 'c1') {
 }
 
 describe('цикл хода', () => {
+  it.each([
+    new AiProviderError('timeout'),
+    new AiProviderError('http_error', 503),
+    new EgressPolicyError('PRIVATE_SENTINEL'),
+    new Error('PRIVATE_SENTINEL'),
+  ])('возвращает квитанции при отказе следующего раунда: %s', async (error) => {
+    const receipt: CommandReceiptSummary = { tool: 'complete_quest', status: 'committed', title: 'Английский' };
+    const gateway = fakeGateway((call) => ({ callId: call.id, name: call.name, status: 'ok', content: { execution_status: 'completed' }, receipt }));
+    let requests = 0;
+    const provider: AiProvider = { name: 'отказ после записи', generateTurn: async () => {
+      requests += 1;
+      if (requests === 1) return { text: 'STALE_DRAFT: всё сделаю', toolCalls: [{ id: 'one', name: 'complete_quest', arguments: {} }] };
+      throw error;
+    } };
+    const result = await runTurn({ provider, gateway, turnId: TURN, message: 'выполнил' }).catch(() => undefined);
+    expect(result).toEqual({ text: '', receipts: [receipt], failures: [], rounds: 1, stopReason: 'provider_error' });
+    expect(gateway.invoked()).toHaveLength(1);
+    expect(requests).toBe(2);
+    expect(JSON.stringify(result)).not.toMatch(/PRIVATE_SENTINEL|STALE_DRAFT/);
+  });
+
+  it('отказ первого раунда возвращает пустой результат без повторов', async () => {
+    let requests = 0;
+    const provider: AiProvider = { name: 'отказ', generateTurn: async () => { requests += 1; throw new Error('PRIVATE_SENTINEL'); } };
+    const gateway = fakeGateway();
+    expect(await runTurn({ provider, gateway, turnId: TURN, message: 'выполнил' }).catch(() => undefined)).toEqual({ text: '', receipts: [], failures: [], rounds: 0, stopReason: 'provider_error' });
+    expect(requests).toBe(1);
+    expect(gateway.invoked()).toHaveLength(0);
+  });
+
+  it('отказ модели сохраняет предыдущие отказы инструментов', async () => {
+    const gateway = fakeGateway((call) => ({ callId: call.id, name: call.name, status: 'conflict', content: { error: 'version_conflict' } }));
+    let requests = 0;
+    const provider: AiProvider = { name: 'отказ', generateTurn: async () => {
+      if (requests++ === 0) return wantsTool('complete_quest', {}, 'one');
+      throw new Error('PRIVATE_SENTINEL');
+    } };
+    const result = await runTurn({ provider, gateway, turnId: TURN, message: 'выполнил' }).catch(() => undefined);
+    expect(result?.failures).toEqual([{ tool: 'complete_quest', status: 'conflict', error: 'version_conflict' }]);
+    expect(result?.receipts).toEqual([]);
+    expect(result?.stopReason).toBe('provider_error');
+  });
+
+  it('ошибка исполнения инструмента не маскируется как отказ модели', async () => {
+    const gateway = fakeGateway(() => { throw new Error('ошибка БД'); });
+    await expect(runTurn({ provider: scriptedProvider([wantsTool('create_quest', {})]), gateway, turnId: TURN, message: 'запиши' })).rejects.toThrow('ошибка БД');
+  });
+
   it('передаёт результат инструмента обратно модели и возвращает ответ', async () => {
     const provider = scriptedProvider([
       wantsTool('get_today_quests', {}),
@@ -189,6 +240,6 @@ describe('цикл хода', () => {
     // Модель должна получить шанс исправиться: падение хода означало бы, что
     // одна неудачная догадка модели стоит человеку всего ответа.
     expect(result.text).toBe('Так не умею, но могу показать задания.');
-    expect(result.receipts).toEqual([]);
+    expect(result?.receipts).toEqual([]);
   });
 });
