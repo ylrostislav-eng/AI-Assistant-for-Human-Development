@@ -1,5 +1,8 @@
 import { randomUUID } from 'node:crypto';
 
+import { createToolGateway } from '../ai/gateway.ts';
+import type { AiProvider } from '../ai/provider.ts';
+import { runTurn, type TurnResult } from '../ai/turn.ts';
 import { derivedCommandId } from '../../shared/commands/derived-id.ts';
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
@@ -48,6 +51,13 @@ export interface ProcessOptions {
   /** Кто допущен к пилоту. Пустой список означает «никого». */
   readonly allowedUserIds: readonly string[];
   readonly limit?: number;
+  /**
+   * Модель для свободного текста. `null` — её нет, и бот отвечает как раньше.
+   *
+   * Это рабочее состояние, а не поломка: команды и кнопки не зависят от
+   * провайдера (ADR-011), а шлюз за два дня наблюдений падал дважды.
+   */
+  readonly ai?: AiProvider | null;
 }
 
 export interface ProcessResult {
@@ -168,6 +178,7 @@ async function composeReply(
   client: TransactionClient,
   update: PendingUpdate,
   userId: string | null,
+  options: ProcessOptions,
 ): Promise<Reply | null> {
   if (userId === null) {
     // Чужому отправителю отвечаем, но аккаунт ему не заводим.
@@ -208,10 +219,92 @@ async function composeReply(
     return null;
   }
 
-  return {
-    kind: 'unknown_command',
-    body: 'Пока понимаю /new и /today. Свободный разбор появится вместе с ИИ.',
-  };
+  if (options.ai === undefined || options.ai === null) {
+    return {
+      kind: 'unknown_command',
+      body: 'Пока понимаю /new и /today. Свободный разбор появится вместе с ИИ.',
+    };
+  }
+
+  return composeAiReply(db, update, userId, text, options.ai);
+}
+
+/**
+ * Что сервер действительно записал, словами для человека.
+ *
+ * Строится из квитанций, а не из текста модели. Модель может написать «готово»,
+ * ничего не сделав, и заметить это человек сможет только через неделю, когда
+ * восстановить факт будет неоткуда (docs/05, раздел 3, пункт 8).
+ */
+function describeReceipt(receipt: { title?: string; executionStatus?: string }): string {
+  const what = receipt.title ?? 'задание';
+  return `• ${what} — ${receipt.executionStatus === 'completed' ? 'выполнено' : 'записано'}`;
+}
+
+function renderTurn(result: TurnResult): string {
+  const parts: string[] = [];
+  const text = result.text.trim();
+  if (text !== '') {
+    parts.push(text);
+  }
+  if (result.receipts.length > 0) {
+    parts.push(['Записано:', ...result.receipts.map(describeReceipt)].join('\n'));
+  }
+  if (result.failures.length > 0) {
+    // Отдельной строкой и без подробностей кодов: человеку нужно знать, что
+    // сделано не всё, и куда посмотреть. «Готово» модели при этом остаётся
+    // выше — переписывать её слова мы не можем, но рядом стоит правда сервера.
+    parts.push(
+      'Не получилось выполнить всё, о чём написано выше. Отправьте /today, чтобы увидеть, как есть сейчас.',
+    );
+  }
+  if (result.stopReason !== 'answered') {
+    parts.push('Ответ оборван на пределе шагов. Спросите короче или по одному делу.');
+  }
+  if (parts.length === 0) {
+    parts.push('Не понял, что сделать. Попробуйте иначе или командой: /new Английский 30м');
+  }
+  return parts.join('\n\n');
+}
+
+/**
+ * Ход модели по свободному тексту.
+ *
+ * Идентификатор хода выведен из обновления, а не случайный: из него шлюз
+ * выводит идентификаторы команд, и повторный разбор обновления возвращает
+ * прежние квитанции вместо второго задания.
+ *
+ * Отказ поставщика не должен выглядеть поломкой бота. За два дня наблюдений
+ * шлюз падал дважды, так что это обычный режим: человеку говорится прямо, что
+ * ИИ сейчас недоступен, и называется путь, который работает всегда.
+ */
+async function composeAiReply(
+  db: Database,
+  update: PendingUpdate,
+  userId: string,
+  text: string,
+  provider: AiProvider,
+): Promise<Reply> {
+  const turnId = derivedCommandId('ai-turn', update.update_id);
+  const gateway = createToolGateway({ database: db, userId, turnId });
+
+  let result: TurnResult;
+  try {
+    result = await runTurn({ provider, gateway, turnId, message: text, source: 'telegram' });
+  } catch {
+    // Причина отказа не пересказывается человеку: в ней бывает и кусок
+    // отправленного текста, и подробности чужой инфраструктуры.
+    return {
+      kind: 'ai_unavailable',
+      body: [
+        'ИИ сейчас недоступен — это со стороны поставщика, не с вашей.',
+        '',
+        'Работает как обычно: /new Английский 30м — записать задание, /today — список с кнопками.',
+      ].join('\n'),
+    };
+  }
+
+  return { kind: 'ai_reply', body: renderTurn(result) };
 }
 
 /**
@@ -451,7 +544,7 @@ export async function processPendingUpdates(
           ? null
           : isButton
             ? await handleButtonPress(db, client, update, userId)
-            : await composeReply(db, client, update, userId);
+            : await composeReply(db, client, update, userId, options);
 
       if (reply !== null && target !== null) {
         await client.query(

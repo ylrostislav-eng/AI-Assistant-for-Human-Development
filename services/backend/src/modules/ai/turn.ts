@@ -25,9 +25,23 @@ export interface TurnLimits {
 
 const DEFAULT_LIMITS: TurnLimits = { maxRounds: 6, maxToolCalls: 12 };
 
+/**
+ * Неудавшийся вызов инструмента.
+ *
+ * Нужен не для журнала, а для ответа человеку: модель, чей вызов отказал, может
+ * всё равно написать «готово». Квитанций при этом нет, и отличить «ничего не
+ * просили» от «просили, но не вышло» без этого списка нечем.
+ */
+export interface TurnFailure {
+  readonly tool: string;
+  readonly status: 'rejected' | 'conflict' | 'not_found';
+  readonly error: string;
+}
+
 export interface TurnResult {
   readonly text: string;
   readonly receipts: readonly CommandReceiptSummary[];
+  readonly failures: readonly TurnFailure[];
   readonly rounds: number;
   readonly stopReason: 'answered' | 'round_limit' | 'call_limit';
 }
@@ -57,6 +71,7 @@ export async function runTurn(options: {
     },
   ];
 
+  const failures: TurnFailure[] = [];
   let rounds = 0;
   let executed = 0;
   let text = '';
@@ -71,7 +86,7 @@ export async function runTurn(options: {
     text = response.text;
 
     if (response.toolCalls.length === 0) {
-      return { text, receipts: options.gateway.receipts(), rounds, stopReason: 'answered' };
+      return { text, receipts: options.gateway.receipts(), failures, rounds, stopReason: 'answered' };
     }
 
     messages.push({ role: 'assistant', content: response.text, toolCalls: response.toolCalls });
@@ -81,13 +96,21 @@ export async function runTurn(options: {
         // Возврат сразу, а не ещё один раунд: модели нечего добавить к ходу,
         // который уже упёрся в предел, а каждый лишний раунд — оплаченный
         // запрос.
-        return { text, receipts: options.gateway.receipts(), rounds, stopReason: 'call_limit' };
+        return { text, receipts: options.gateway.receipts(), failures, rounds, stopReason: 'call_limit' };
       }
       executed += 1;
 
       // Изменения строго по очереди: параллельный запуск двух отметок
       // выполнения дал бы две награды за одно действие (docs/05, раздел 3).
       const result = await options.gateway.invoke(call);
+      if (result.status !== 'ok') {
+        const error = result.content['error'];
+        failures.push({
+          tool: call.name,
+          status: result.status,
+          error: typeof error === 'string' ? error : result.status,
+        });
+      }
       messages.push({
         role: 'tool',
         callId: call.id,
@@ -97,5 +120,5 @@ export async function runTurn(options: {
     }
   }
 
-  return { text, receipts: options.gateway.receipts(), rounds, stopReason: 'round_limit' };
+  return { text, receipts: options.gateway.receipts(), failures, rounds, stopReason: 'round_limit' };
 }

@@ -1,4 +1,5 @@
 import { loadConfig } from './config.ts';
+import { buildAiProvider } from './modules/ai/providers/routing.ts';
 import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
 import {
@@ -39,6 +40,14 @@ async function main(): Promise<void> {
   const transport =
     config.telegram.botToken === null ? null : createBotApiTransport(config.telegram.botToken);
 
+  // Провайдер собирается один раз: разбор настроек и проверка семейств моделей
+  // должны падать на старте, а не на первом сообщении человека. Отсутствие
+  // ключа — рабочее состояние: бот продолжает понимать команды и кнопки.
+  const ai = config.ai === null ? null : buildAiProvider(config.ai);
+  if (ai === null) {
+    console.log('ИИ не настроен: свободный текст разбираться не будет');
+  }
+
   let stopping = false;
   const stop = (): void => {
     stopping = true;
@@ -55,6 +64,7 @@ async function main(): Promise<void> {
       // из-за которого он перестаёт повторять доставку.
       const updates = await processPendingUpdates(database, {
         allowedUserIds: config.telegram.allowedUserIds,
+        ai,
       });
       // Сырые тела — личная переписка: они нужны до разбора и недолго после
       // него, а дальше хранятся без причины.

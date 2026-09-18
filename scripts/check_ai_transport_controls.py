@@ -15,12 +15,14 @@ print(f'Reports: {ARTIFACTS}', flush=True)
 HTTP = 'services/backend/src/modules/ai/providers/http.ts'
 ROUTING = 'services/backend/src/modules/ai/providers/routing.ts'
 CONFIG = 'services/backend/src/config.ts'
+INBOX = 'services/backend/src/modules/telegram/inbox.ts'
 TRANSPORT_TESTS = 'tests/unit/ai-http-provider.test.ts'
 ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
+BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -77,6 +79,14 @@ add('fallback family split', 'запасная модель того же сем
 add('AI config completeness', 'ключ без адреса или без модели', "  const baseUrl = requireEnv('AI_BASE_URL', env).trim();", "  const baseUrl = (env['AI_BASE_URL'] ?? 'https://fallback.invalid/v1').trim();", CONFIG, ROUTING_TESTS)
 add('AI transport encryption', 'адрес не по https', "  if (!baseUrl.startsWith('https://')) {", '  if (false) {', CONFIG, ROUTING_TESTS)
 add('AI optional', 'без ключа ИИ просто нет', "    return null;\n  }\n\n  const baseUrl", "    throw new ConfigError('Не задан AI_API_KEY');\n  }\n\n  const baseUrl", CONFIG, ROUTING_TESTS)
+
+# Ответ человеку: подтверждение обязано приходить из квитанций сервера, а не
+# из слов модели, и мёртвая модель не должна выглядеть поломкой бота.
+add('failure disclosure', 'не подтверждает то, чего сервер не записал', '  if (result.failures.length > 0) {', '  if (false) {', INBOX, BOT_TESTS)
+add('receipt gating', 'не подтверждает то, чего сервер не записал', '  if (result.receipts.length > 0) {', '  if (true) {', INBOX, BOT_TESTS)
+add('honest unavailability', 'отвечает честно и ничего не выдумывает', "      kind: 'ai_unavailable',", "      kind: 'ai_reply',", INBOX, BOT_TESTS)
+add('turn id determinism', 'повтор того же обновления', "  const turnId = derivedCommandId('ai-turn', update.update_id);", '  const turnId = randomUUID();', INBOX, BOT_TESTS)
+add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new')) {", '  if (false) {', INBOX, BOT_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)
