@@ -86,6 +86,8 @@ export interface CreateQuestTemplatePayload {
   readonly goal_id?: string;
   readonly minimum_spec?: Record<string, unknown>;
   readonly category?: string;
+  /** Повторение. Отсутствие означает разовое задание, а не «ежедневное по умолчанию». */
+  readonly recurrence?: Record<string, unknown>;
 }
 
 /**
@@ -133,6 +135,7 @@ export function parseCreateQuestTemplate(
 
   const goalId = payload['goal_id'];
   const category = payload['category'];
+  const recurrence = payload['recurrence'] as Record<string, unknown> | undefined;
 
   return {
     title: requireString(payload, 'title'),
@@ -140,14 +143,16 @@ export function parseCreateQuestTemplate(
     ...(typeof goalId === 'string' ? { goal_id: goalId } : {}),
     ...(minimumSpec === undefined ? {} : { minimum_spec: minimumSpec }),
     ...(typeof category === 'string' ? { category } : {}),
+    ...(recurrence === undefined ? {} : { recurrence }),
   };
 }
 
 export function createQuestTemplateHandler(payload: CreateQuestTemplatePayload) {
   return async (context: CommandContext): Promise<CommandOutcome> => {
     const inserted = await context.client.query<{ id: string }>(
-      `INSERT INTO quest_templates (user_id, goal_id, title, category, normal_spec, minimum_spec)
-       VALUES ($1, $2::uuid, $3, COALESCE($4, 'daily'), $5::jsonb, $6::jsonb)
+      `INSERT INTO quest_templates
+         (user_id, goal_id, title, category, normal_spec, minimum_spec, recurrence)
+       VALUES ($1, $2::uuid, $3, COALESCE($4, 'daily'), $5::jsonb, $6::jsonb, $7::jsonb)
        RETURNING id`,
       [
         context.userId,
@@ -156,6 +161,9 @@ export function createQuestTemplateHandler(payload: CreateQuestTemplatePayload) 
         payload.category ?? null,
         JSON.stringify(payload.normal_spec),
         payload.minimum_spec === undefined ? null : JSON.stringify(payload.minimum_spec),
+        // NULL, а не пустой объект: отсутствие повторения и «повторение,
+        // про которое ничего не сказано» — разные вещи при чтении.
+        payload.recurrence === undefined ? null : JSON.stringify(payload.recurrence),
       ],
     );
 

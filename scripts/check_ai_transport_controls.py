@@ -20,6 +20,7 @@ TRANSPORT_TESTS = 'tests/unit/ai-http-provider.test.ts'
 ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
 BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
 CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
+RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
@@ -87,7 +88,7 @@ add('failure disclosure', 'не подтверждает то, чего серв
 add('receipt gating', 'не подтверждает то, чего сервер не записал', '  if (result.receipts.length > 0) {', '  if (true) {', INBOX, BOT_TESTS)
 add('honest unavailability', 'отвечает честно и ничего не выдумывает', "      kind: 'ai_unavailable',", "      kind: 'ai_reply',", INBOX, BOT_TESTS)
 add('turn id determinism', 'повтор того же обновления', "  const turnId = derivedCommandId('ai-turn', update.update_id);", '  const turnId = randomUUID();', INBOX, BOT_TESTS)
-add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new')) {", '  if (false) {', INBOX, BOT_TESTS)
+add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new') || text.startsWith('/every')) {", '  if (false) {', INBOX, BOT_TESTS)
 
 # Отмена задания: она не должна ни засчитываться выполнением, ни тихо
 # применяться к состоянию, которого человек не видел.
@@ -99,6 +100,13 @@ add('cancel version check', 'устаревшая кнопка даёт чест
 # что проверка в запросе — второй рубеж, а не единственный. Отсутствие контроля
 # тут означает «защита избыточна», а не «защита не проверена»; поставить
 # контроль, который не может упасть, значит соврать самим себе.
+
+# Повторение: разовое задание не должно становиться ежедневным само, а
+# ежедневное — не появляться на следующий день.
+add('recurring only', 'разовое задание на следующий день не появляется', "        AND t.recurrence ->> 'kind' = 'daily'\n", '', INBOX, RECUR_TESTS)
+add('once stays once', 'разовое задание на следующий день не появляется', "      ...(repeating ? { recurrence: { kind: 'daily' } } : {}),", "      recurrence: { kind: 'daily' },", INBOX, RECUR_TESTS)
+add('recurring clock', 'возвращается на следующий день', '  const day = await localDay(client, userId, now);\n  const templates', '  const day = await localDay(client, userId, () => new Date());\n  const templates', INBOX, RECUR_TESTS)
+add('every command', 'создаётся командой и сразу попадает', "  if (text.startsWith('/new') || text.startsWith('/every')) {", "  if (text.startsWith('/new')) {", INBOX, RECUR_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

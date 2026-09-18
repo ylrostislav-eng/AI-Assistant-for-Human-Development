@@ -69,7 +69,10 @@ function parseAmount(token: string): { amount: number; unit: string } | null {
 }
 
 export function parseNewQuest(line: string): ParsedNewQuest {
-  const withoutCommand = line.trim().replace(/^\/new(?:@\S+)?\s*/iu, '');
+  // Обе команды разбираются одинаково: отличаются они только повторением, а
+  // не тем, как записаны название и мера. Отдельный разбор для второй разошёлся
+  // бы с первым незаметно.
+  const withoutCommand = line.trim().replace(/^\/(?:new|every)(?:@\S+)?\s*/iu, '');
   const words = withoutCommand.split(/\s+/u).filter((word) => word !== '');
 
   // Нужны хотя бы название и мера: одно слово — это либо забытая мера, либо

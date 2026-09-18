@@ -81,6 +81,12 @@ export interface ProcessOptions {
    * провайдера (ADR-011), а шлюз за два дня наблюдений падал дважды.
    */
   readonly ai?: AiProvider | null;
+  /**
+   * Часы. Нужны проверкам: «появится ли задание завтра» иначе не проверить
+   * иначе как ожиданием суток, а непроверенное повторение — это задание,
+   * которое однажды не придёт, и никто не заметит.
+   */
+  readonly now?: () => Date;
 }
 
 export interface ProcessResult {
@@ -142,8 +148,15 @@ function chatId(payload: Record<string, unknown>): string | null {
  * сообщение устаревает в тот момент, когда то же задание завершают в другом
  * месте, и пересказ переписки показал бы человеку прошлое.
  */
-async function composeToday(client: TransactionClient, userId: string): Promise<Reply> {
+async function composeToday(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  now: () => Date,
+): Promise<Reply> {
   await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  await materializeRecurring(db, client, update, userId, now);
   const quests = await client.query<{
     id: string;
     version: string;
@@ -224,7 +237,8 @@ async function composeReply(
         'Система развития на связи.',
         '',
         'Что умею сейчас:',
-        '/new Английский 30м — создать задание на сегодня',
+        '/new Английский 30м — задание на сегодня',
+        '/every Английский 30м — то же, но каждый день',
         '/today — показать задания с кнопками',
         '',
         'Награды, уровни и планирование появятся дальше — обещать их сейчас было бы нечестно.',
@@ -233,11 +247,11 @@ async function composeReply(
   }
 
   if (text.startsWith('/today')) {
-    return composeToday(client, userId);
+    return composeToday(db, client, update, userId, options.now ?? ((): Date => new Date()));
   }
 
-  if (text.startsWith('/new')) {
-    return createQuestFromLine(db, client, update, userId, text);
+  if (text.startsWith('/new') || text.startsWith('/every')) {
+    return createQuestFromLine(db, client, update, userId, text, options);
   }
 
   if (text === '') {
@@ -249,7 +263,7 @@ async function composeReply(
   if (options.ai === undefined || options.ai === null) {
     return {
       kind: 'unknown_command',
-      body: 'Пока понимаю /new и /today. Свободный разбор появится вместе с ИИ.',
+        body: 'Пока понимаю /new, /every и /today. Свободный разбор появится вместе с ИИ.',
     };
   }
 
@@ -360,19 +374,18 @@ function commandIdFor(updateId: string, step: string): string {
  * человек в Москве, создающий задание в час ночи, имеет в виду сегодняшний
  * день по своей границе, а не по UTC.
  */
-async function createQuestFromLine(
-  db: Database,
+/**
+ * Сегодняшний пользовательский день.
+ *
+ * Именно пользовательский, а не календарный по серверу: задание, созданное в
+ * час ночи по Москве, относится к сегодняшнему дню человека, а не к следующему
+ * по UTC.
+ */
+async function localDay(
   client: TransactionClient,
-  update: PendingUpdate,
   userId: string,
-  line: string,
-): Promise<Reply> {
-  const parsed = parseNewQuest(line);
-  if (!parsed.ok) {
-    return { kind: 'new_usage', body: parsed.hint };
-  }
-
-  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  now: () => Date,
+): Promise<{ localDate: string; timezone: string }> {
   const profile = await client.query<{ timezone: string; day_boundary_minutes: number }>(
     'SELECT timezone, day_boundary_minutes FROM user_profiles WHERE user_id = $1',
     [userId],
@@ -381,7 +394,95 @@ async function createQuestFromLine(
   if (settings === undefined) {
     throw new Error('У пользователя нет профиля');
   }
-  const day = userDayAt(new Date(), settings.timezone, settings.day_boundary_minutes);
+  const day = userDayAt(now(), settings.timezone, settings.day_boundary_minutes);
+  return { localDate: day.localDate, timezone: settings.timezone };
+}
+
+/**
+ * Достройка экземпляров повторяющихся заданий на сегодня.
+ *
+ * Лениво, при показе списка, а не по расписанию. Отдельный планировщик пришлось
+ * бы будить в границу дня каждого пользователя и следить, чтобы он не проспал и
+ * не сработал дважды; а список, который человек не открыл, ему и не нужен.
+ *
+ * Повторный показ безопасен без всякой блокировки. Держит это **ограничение
+ * уникальности** `quest_occurrences_key_unique` по (пользователь, шаблон,
+ * ключ) — проверено прямо: со случайным идентификатором команды дубликаты всё
+ * равно не появляются. Поэтому убранное или выполненное сегодня не
+ * возвращается сегодня: строка на этот день уже есть, просто в другом
+ * состоянии.
+ *
+ * Условие `NOT EXISTS` ниже — не защита, а способ не отправлять заведомо
+ * обречённые команды: без него каждый показ списка порождал бы отказ на
+ * ограничении, и нормальным ходом дел стала бы гонка за нарушение
+ * уникальности.
+ */
+async function materializeRecurring(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  now: () => Date,
+): Promise<void> {
+  const day = await localDay(client, userId, now);
+  const templates = await client.query<{ id: string }>(
+    `SELECT t.id FROM quest_templates t
+      WHERE t.deleted_at IS NULL
+        AND t.recurrence ->> 'kind' = 'daily'
+        AND NOT EXISTS (
+          SELECT 1 FROM quest_occurrences o
+           WHERE o.template_id = t.id AND o.recurrence_key = $1
+        )
+      ORDER BY t.created_at
+      LIMIT 20`,
+    [day.localDate],
+  );
+
+  for (const template of templates.rows) {
+    await executeEnvelope(
+      db,
+      userId,
+      // Идентификатор выведен из шаблона и даты, а не из обновления: список за
+      // день открывают много раз, и повтор обязан возвращать прежнюю квитанцию,
+      // а не выясняться нарушением ограничения. От дубликатов защищает не это
+      // (проверено: со случайным идентификатором их тоже нет) — здесь важна
+      // стабильность квитанции и отсутствие мусорных отказов в журнале.
+      {
+        schema_version: 1,
+        command_id: derivedCommandId('recurring', template.id, day.localDate),
+        device_id: derivedCommandId('recurring', 'device', update.update_id),
+        kind: 'materialize_occurrence',
+        aggregate_id: null,
+        expected_version: null,
+        client_created_at: now().toISOString(),
+        depends_on_command_id: null,
+        payload: {
+          template_id: template.id,
+          recurrence_key: day.localDate,
+          timezone: day.timezone,
+        },
+      },
+    );
+  }
+}
+
+async function createQuestFromLine(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  line: string,
+  options: ProcessOptions,
+): Promise<Reply> {
+  const parsed = parseNewQuest(line);
+  if (!parsed.ok) {
+    return { kind: 'new_usage', body: parsed.hint };
+  }
+  const repeating = /^\/every\b/iu.test(line.trim());
+
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  const now = options.now ?? ((): Date => new Date());
+  const day = await localDay(client, userId, now);
 
   const envelope = (kind: string, step: string, payload: Record<string, unknown>) => ({
     schema_version: 1,
@@ -401,6 +502,9 @@ async function createQuestFromLine(
     envelope('create_quest_template', 'template', {
       title: parsed.title,
       normal_spec: parsed.spec,
+      // Разовое задание остаётся разовым: молчаливое превращение `/new` в
+      // ежедневное означало бы, что система решила за человека.
+      ...(repeating ? { recurrence: { kind: 'daily' } } : {}),
     }),
   );
   const templateId = template.result?.['template_id'];
@@ -417,7 +521,7 @@ async function createQuestFromLine(
     envelope('materialize_occurrence', 'occurrence', {
       template_id: templateId,
       recurrence_key: day.localDate,
-      timezone: settings.timezone,
+      timezone: day.timezone,
     }),
   );
   if (occurrence.result === undefined) {
@@ -429,7 +533,9 @@ async function createQuestFromLine(
 
   return {
     kind: 'new_created',
-    body: `Записал: ${parsed.title}. Отправьте /today, чтобы увидеть список с кнопками.`,
+    body: repeating
+      ? `Записал: ${parsed.title}. Будет появляться каждый день. Отправьте /today, чтобы увидеть список.`
+      : `Записал: ${parsed.title}. Отправьте /today, чтобы увидеть список с кнопками.`,
   };
 }
 

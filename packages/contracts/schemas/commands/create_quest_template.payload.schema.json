@@ -10,6 +10,13 @@
     "category": {
       "enum": ["main", "daily", "skill", "discipline", "side", "boss", "recovery"]
     },
+    "recurrence": {
+      "description": "Повторение. Перечисление закрыто намеренно: дни недели и частота в неделю добавляются отдельным решением, а не угадыванием из произвольного объекта.",
+      "type": "object",
+      "additionalProperties": false,
+      "properties": { "kind": { "enum": ["daily"] } },
+      "required": ["kind"]
+    },
     "normal_spec": { "$ref": "_effort-spec.schema.json" },
     "minimum_spec": { "$ref": "_effort-spec.schema.json" }
   },
