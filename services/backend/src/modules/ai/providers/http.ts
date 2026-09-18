@@ -18,12 +18,78 @@ type ErrorCode = 'invalid_config' | 'invalid_request' | 'invalid_response' | 'ht
 /** No upstream body, URL, headers or cause: those may contain private text and credentials. */
 export class AiProviderError extends Error {
   readonly retryable: boolean;
-  constructor(readonly code: ErrorCode, readonly httpStatus?: number) {
+  constructor(readonly code: ErrorCode, readonly httpStatus?: number, upstreamTransient = false) {
     super(`AI provider: ${code}`);
     this.name = 'AiProviderError';
     this.retryable = code === 'timeout' || code === 'network_error'
-      || (code === 'http_error' && (httpStatus === 429 || (httpStatus !== undefined && httpStatus >= 500)));
+      || (code === 'http_error'
+        && (httpStatus === 429 || (httpStatus !== undefined && httpStatus >= 500) || upstreamTransient));
   }
+}
+
+/**
+ * Коды, которыми посредник сообщает о собственной временной недоступности,
+ * оставаясь при этом в HTTP 400.
+ *
+ * По коду состояния такой отказ неотличим от негодного запроса, и перебор
+ * провайдеров не включается — ровно в том случае, ради которого он написан.
+ * Проверено живыми запросами 17 сентября (handoff 3.19): шлюз отвечал
+ * `400 upstream_unavailable` на всю линию Claude, пока модель другого
+ * семейства работала.
+ *
+ * Список закрытый. Открывать его до «любой 400 с кодом» нельзя: тогда перебор
+ * начнёт оплачивать вторую попытку для каждой нашей собственной ошибки в
+ * запросе, а она не станет верной у второго поставщика.
+ */
+const TRANSIENT_UPSTREAM_CODES = new Set(['upstream_unavailable', 'overloaded_error']);
+
+/** Сколько байт тела ошибки читаем ради одного опознавательного кода. */
+const ERROR_PROBE_BYTES = 4096;
+
+/**
+ * Опознание временной недоступности по телу ошибки.
+ *
+ * Из чужого тела берётся короткий идентификатор и ничего больше: сообщение об
+ * ошибке у посредника нередко содержит кусок отправленного текста, а он у нас
+ * личный. Наружу отсюда выходит только `true`/`false`, поэтому сохранить
+ * что-либо лишнее физически негде.
+ *
+ * Любая неудача разбора означает «не временная»: догадка в сторону повтора
+ * стоит денег, догадка в сторону отказа — нет.
+ */
+async function readsAsTransient(response: Response): Promise<boolean> {
+  const stream = response.body;
+  if (stream === null) return false;
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    while (size < ERROR_PROBE_BYTES) {
+      const part = await reader.read();
+      if (part.done) break;
+      size += part.value.byteLength;
+      chunks.push(part.value);
+    }
+  } catch {
+    return false;
+  } finally {
+    void reader.cancel().catch(() => {});
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(Buffer.concat(chunks).subarray(0, ERROR_PROBE_BYTES).toString('utf8')) as unknown;
+  } catch {
+    return false;
+  }
+  const error = (parsed as JsonObject | null)?.['error'];
+  if (error === null || typeof error !== 'object' || Array.isArray(error)) return false;
+  return ['code', 'type'].some((key) => {
+    const value = (error as JsonObject)[key];
+    // Длина и алфавит ограничены: это опознавательный код, а не свободный текст.
+    return typeof value === 'string' && /^[a-z_]{1,64}$/.test(value)
+      && TRANSIENT_UPSTREAM_CODES.has(value);
+  });
 }
 
 type JsonObject = Record<string, unknown>;
@@ -226,8 +292,7 @@ export function createHttpAiProvider(
         else { headers['x-api-key'] = config.apiKey; headers['anthropic-version'] = '2023-06-01'; }
         const response = await fetch(url, { method: 'POST', headers, body, signal: controller.signal, redirect: 'error' });
         if (!response.ok) {
-          void response.body?.cancel().catch(() => {});
-          throw new AiProviderError('http_error', response.status);
+          throw new AiProviderError('http_error', response.status, await readsAsTransient(response));
         }
         if (!response.body) throw new AiProviderError('invalid_response');
         reader = response.body.getReader();

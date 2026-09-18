@@ -157,6 +157,26 @@ describe('HTTP AI: protocol boundary', () => {
     await expect(provider.generateTurn(request)).rejects.toMatchObject({ code: 'response_too_large', retryable: false });
   });
 
+  it('opoznav — код берётся из тела ошибки, а сам текст не сохраняется', async () => {
+    // Тело чужой ошибки может содержать кусок переписки и учётные данные.
+    // Из него берётся короткий код и ничего больше: исключение не должно
+    // становиться местом, куда утекает то, что мы отказались хранить.
+    const { provider, fetch } = setup();
+    fetch.mockResolvedValue(response({ error: { message: 'PRIVATE_SENTINEL', type: 'invalid_request_error',
+      code: 'upstream_unavailable' } }, 400));
+
+    const error = await provider.generateTurn(request).catch((caught: unknown) => caught);
+    expect(error).toMatchObject({ code: 'http_error', httpStatus: 400, retryable: true });
+    expect(inspect(error, { depth: null })).not.toMatch(/PRIVATE_SENTINEL|EXAMPLE-credential/);
+  });
+
+  it('нечитаемое тело ошибки не делает отказ временным и не роняет разбор', async () => {
+    const { provider, fetch } = setup();
+    fetch.mockResolvedValue(new Response('<html>502 Bad Gateway</html>', { status: 400 }));
+
+    await expect(provider.generateTurn(request)).rejects.toMatchObject({ httpStatus: 400, retryable: false });
+  });
+
   it.each([401, 403, 429, 500, 503])('safe HTTP %i classification: no remote text/credentials retained', async (status) => {
     const fetch = vi.fn<typeof globalThis.fetch>().mockResolvedValue(response({ error: 'PRIVATE_SENTINEL' }, status));
     const provider = createHttpAiProvider(options, { fetch });
@@ -279,6 +299,40 @@ describe('bounded provider fallback', () => {
     const b = setup(); b.fetch.mockResolvedValue(response({}, 503));
     await expect(createFallbackAiProvider([a.provider, b.provider]).generateTurn(request)).rejects.toMatchObject({ httpStatus: 503 });
     expect(a.fetch).toHaveBeenCalledTimes(1); expect(b.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('temporarily unavailable 400 — недоступность поставщика считается временной и включает перебор', async () => {
+    // Шлюз, через который куплен доступ, отдаёт именно так: HTTP 400 с
+    // `invalid_request_error`, хотя запрос верен, а недоступен его канал к
+    // поставщику. Проверено живыми запросами 17 сентября (handoff 3.19): весь
+    // вечер вся линия Claude отвечала так, пока gpt-6-astra работал. Считать
+    // это негодным запросом значит не включить перебор ровно в том случае,
+    // ради которого он написан.
+    const upstream = { error: { message: 'API is temporarily unavailable. Try again later.',
+      type: 'invalid_request_error', code: 'upstream_unavailable', request_id: 'synthetic' } };
+    const a = setup(); a.fetch.mockResolvedValue(response(upstream, 400));
+    const b = setup(anthropic(), { protocol: 'anthropic-messages' });
+
+    // Отказ ловится, а не всплывает: проверка должна падать утверждением, иначе
+    // отрицательный контроль не отличит снятую защиту от сломанной сборки.
+    const answer = await createFallbackAiProvider([a.provider, b.provider])
+      .generateTurn(request)
+      .catch(() => null);
+
+    expect(answer?.text).toBe('Ответ');
+    expect(b.fetch).toHaveBeenCalledTimes(1);
+  });
+
+  it('genuine bad request 400 — настоящий негодный запрос не повторяется', async () => {
+    // Иначе перебор оплачивает второй попыткой каждую собственную ошибку:
+    // запрос, который не понравился одному поставщику, не понравится и второму.
+    const a = setup();
+    a.fetch.mockResolvedValue(response({ error: { message: 'Unknown parameter', type: 'invalid_request_error' } }, 400));
+    const b = setup();
+
+    await expect(createFallbackAiProvider([a.provider, b.provider]).generateTurn(request))
+      .rejects.toMatchObject({ httpStatus: 400, retryable: false });
+    expect(b.fetch).not.toHaveBeenCalled();
   });
 
   it('unknown programming error does not trigger paid fallback', async () => {
