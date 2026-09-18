@@ -153,6 +153,12 @@ add('level integer division', 'на милли-XP меньше порога', ' 
 add('level up only when earned', 'без повышения об уровне не сообщается', "      outcome.result?.['leveled_up'] === true && typeof level === 'number'", "      typeof level === 'number'", INBOX, PROGRESS_TESTS)
 add('progress from ledger', 'показывает накопленное после выполнения', "    'SELECT COALESCE(SUM(amount_mxp), 0)::text AS total FROM xp_ledger WHERE user_id = $1',", "    'SELECT 0::text AS total FROM xp_ledger WHERE user_id = $1 LIMIT 1',", INBOX, PROGRESS_TESTS)
 
+# Постоянство: считается по закрытым прошлым дням и ступенями по три.
+add('consistency steps', 'успешных дней дают', '  const steps = Math.min(rules.max_steps, Math.floor(successDays / rules.days_per_step));', '  const steps = Math.min(rules.max_steps, successDays);', ENGINE, 'tests/unit/progression-award.test.ts')
+add('consistency ceiling', 'потолок не пробивается', '  const steps = Math.min(rules.max_steps, Math.floor(successDays / rules.days_per_step));', '  const steps = Math.floor(successDays / rules.days_per_step);', ENGINE, 'tests/unit/progression-award.test.ts')
+add('consistency excludes today', 'не поднимает множитель самому себе', "        AND recurrence_key < $2", "        AND recurrence_key <= $2", AWARD, LEDGER_TESTS)
+add('consistency applied', 'три успешных дня подряд', '    consistencyBp: consistencyBasisPoints(await successDays(client, request.userId, bucketKey)),', '    consistencyBp: NEUTRAL_BP,', AWARD, LEDGER_TESTS)
+
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)
 if not 0 <= start < stop <= len(cases):

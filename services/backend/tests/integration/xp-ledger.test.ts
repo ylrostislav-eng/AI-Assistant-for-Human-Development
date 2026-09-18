@@ -52,14 +52,23 @@ function envelope(kind: string, payload: Record<string, unknown>, target?: { id:
   };
 }
 
+/**
+ * Сегодняшняя локальная дата пользователя. Ключ повторения обязан быть именно
+ * датой: иначе проверки границы окна постоянства проходят не по той причине —
+ * такой ключ отсекается отбором раньше, чем дело доходит до сравнения дат.
+ */
+function todayLocal(): string {
+  return new Date().toLocaleDateString('sv-SE', { timeZone: 'Europe/Moscow' });
+}
+
 /** Задание с экземпляром на сегодня. Возвращает идентификатор экземпляра. */
-async function makeQuest(userId: string, title = 'Английский'): Promise<string> {
+async function makeQuest(userId: string, title = 'Английский', seconds = 2700): Promise<string> {
   const template = await executeEnvelope(
     runtimeDb,
     userId,
     envelope('create_quest_template', {
       title,
-      normal_spec: { success_rule: 'duration', unit: 'seconds', duration_seconds: 2700 },
+      normal_spec: { success_rule: 'duration', unit: 'seconds', duration_seconds: seconds },
     }),
   );
   const occurrence = await executeEnvelope(
@@ -67,7 +76,7 @@ async function makeQuest(userId: string, title = 'Английский'): Promis
     userId,
     envelope('materialize_occurrence', {
       template_id: template.result?.['template_id'],
-      recurrence_key: `2026-09-18-${randomUUID().slice(0, 8)}`,
+      recurrence_key: todayLocal(),
       timezone: 'Europe/Moscow',
     }),
   );
@@ -312,6 +321,98 @@ describe('начисление за выполнение', () => {
 
     expect(await totalMxp(userId)).toBe(ROLLING_CAP_MXP);
   });
+});
+
+describe('постоянство', () => {
+  /** Закрытый день с выполненным заданием. */
+  async function successfulDay(userId: string, localDate: string): Promise<void> {
+    const template = await executeEnvelope(
+      runtimeDb,
+      userId,
+      envelope('create_quest_template', {
+        title: `Прошлое ${localDate}`,
+        normal_spec: { success_rule: 'duration', unit: 'seconds', duration_seconds: 60 },
+      }),
+    );
+    const occurrence = await executeEnvelope(
+      runtimeDb,
+      userId,
+      envelope('materialize_occurrence', {
+        template_id: template.result?.['template_id'],
+        recurrence_key: localDate,
+        timezone: 'Europe/Moscow',
+      }),
+    );
+    await executeEnvelope(
+      runtimeDb,
+      userId,
+      envelope(
+        'complete_quest',
+        { actual_duration_seconds: 60 },
+        { id: occurrence.result?.['occurrence_id'] as string, version: 1 },
+      ),
+    );
+  }
+
+  it('три успешных дня подряд поднимают награду на два процента', async () => {
+    const userId = await createUser();
+    for (const day of ['2026-09-01', '2026-09-02', '2026-09-03']) {
+      await successfulDay(userId, day);
+    }
+
+    const today = await makeQuest(userId, 'Сегодня');
+    await executeEnvelope(
+      runtimeDb,
+      userId,
+      envelope('complete_quest', { actual_duration_seconds: 2700 }, { id: today, version: 1 }),
+    );
+
+    const rows = await ledger(userId);
+    // 45 минут это 22.500 XP, с множителем 1.02 — ровно 22.950.
+    expect(rows[rows.length - 1]?.amount_mxp).toBe('22950');
+  });
+
+  it('двух дней не хватает: ступень начинается с трёх', async () => {
+    const userId = await createUser();
+    for (const day of ['2026-09-01', '2026-09-02']) {
+      await successfulDay(userId, day);
+    }
+
+    const today = await makeQuest(userId, 'Сегодня');
+    await executeEnvelope(
+      runtimeDb,
+      userId,
+      envelope('complete_quest', { actual_duration_seconds: 2700 }, { id: today, version: 1 }),
+    );
+
+    const rows = await ledger(userId);
+    expect(rows[rows.length - 1]?.amount_mxp).toBe('22500');
+  });
+
+  it('сегодняшнее выполнение не поднимает множитель самому себе', async () => {
+    const userId = await createUser();
+    // Два прошлых успешных дня: до ступени не хватает ровно одного. Если окно
+    // захватит текущий день, второе сегодняшнее задание увидит первое как
+    // третий успешный день и получит надбавку — награда начнёт зависеть от
+    // порядка отметок внутри дня.
+    await successfulDay(userId, '2026-09-01');
+    await successfulDay(userId, '2026-09-02');
+
+    for (const title of ['Сегодня первое', 'Сегодня второе']) {
+      const quest = await makeQuest(userId, title);
+      await executeEnvelope(
+        runtimeDb,
+        userId,
+        envelope('complete_quest', { actual_duration_seconds: 2700 }, { id: quest, version: 1 }),
+      );
+    }
+
+    const rows = await ledger(userId);
+    const today = rows.slice(-2).map((row) => row.amount_mxp);
+    // Оба по 22.500: надбавки нет ни у первого, ни у второго.
+    expect(today).toEqual(['22500', '22500']);
+  });
+
 });
 
 describe('журнал', () => {

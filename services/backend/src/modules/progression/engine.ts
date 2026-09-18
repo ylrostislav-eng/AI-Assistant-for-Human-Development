@@ -41,6 +41,12 @@ interface ProgressionRules {
   };
   readonly reward: {
     readonly base_xp_per_minute: number;
+    readonly consistency: {
+      readonly step: number;
+      readonly days_per_step: number;
+      readonly max_steps: number;
+      readonly window_eligible_days: number;
+    };
     readonly family_bands: readonly Band[];
     readonly global_bands: readonly Band[];
     readonly daily_cap_xp: number;
@@ -188,4 +194,27 @@ export function computeAward(input: AwardInput): AwardResult {
   const amountMxp = (weighted * RATE_MXP_PER_MINUTE * multipliers) / denominator;
 
   return { amountMxp, countedSeconds: input.seconds };
+}
+
+/** Сколько последних закрытых пригодных дней смотрит постоянство. */
+export const CONSISTENCY_WINDOW_DAYS = RULES.reward.consistency.window_eligible_days;
+
+/**
+ * Множитель постоянства: `1 + 0.02 × min(4, floor(успешные_дни / 3))`.
+ *
+ * Считается по закрытым предыдущим дням, а не по текущему: сегодняшнее
+ * выполнение не должно поднимать множитель самому себе.
+ *
+ * Потолок в четыре ступени намеренно низкий — восемь процентов сверху. Это
+ * поощрение за регулярность, а не рычаг, ради которого стоит заниматься больным
+ * или без сна: система прямо отказывается наказывать за отдых (AGENTS.md), и
+ * симметрично не должна делать перерыв дорогим.
+ */
+export function consistencyBasisPoints(successDays: number): number {
+  if (!Number.isInteger(successDays) || successDays < 0) {
+    throw new Error(`Число успешных дней должно быть целым неотрицательным: ${successDays}`);
+  }
+  const rules = RULES.reward.consistency;
+  const steps = Math.min(rules.max_steps, Math.floor(successDays / rules.days_per_step));
+  return Math.round((1 + rules.step * steps) * 10_000);
 }

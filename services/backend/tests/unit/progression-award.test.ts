@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   computeAward,
+  consistencyBasisPoints,
   progressionRules,
   RULE_VERSION,
   type AwardInput,
@@ -131,5 +132,31 @@ describe('арифметика', () => {
 
   it('час ровно по базовой ставке — 30.000 XP', () => {
     expect(award({ seconds: HOUR })).toBe(30_000n);
+  });
+});
+
+describe('множитель постоянства', () => {
+  it.each([
+    [0, 10_000],
+    [2, 10_000],
+    [3, 10_200],
+    [5, 10_200],
+    [6, 10_400],
+    [9, 10_600],
+    [12, 10_800],
+  ])('%i успешных дней дают %i базисных пунктов', (days, expected) => {
+    expect(consistencyBasisPoints(days)).toBe(expected);
+  });
+
+  it('потолок не пробивается ни при каком числе дней', () => {
+    // Восемь процентов сверху — это поощрение за регулярность, а не рычаг,
+    // ради которого стоит заниматься больным. Система отказывается наказывать
+    // за отдых, и симметрично не должна делать перерыв дорогим.
+    expect(consistencyBasisPoints(365)).toBe(10_800);
+  });
+
+  it('отрицательное число дней — ошибка, а не ноль', () => {
+    // Молчаливое приведение к нулю спрятало бы ошибку в подсчёте дней.
+    expect(() => consistencyBasisPoints(-1)).toThrow();
   });
 });

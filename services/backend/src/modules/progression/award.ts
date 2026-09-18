@@ -2,7 +2,9 @@ import { createHash } from 'node:crypto';
 
 import {
   computeAward,
+  consistencyBasisPoints,
   evidenceBasisPoints,
+  CONSISTENCY_WINDOW_DAYS,
   DAILY_CAP_MXP,
   ROLLING_CAP_MXP,
   RULE_VERSION,
@@ -23,11 +25,9 @@ import { userDayAt } from '../../shared/time/user-day.ts';
  * падение в этом окне не восстановил бы никто: факт есть, начисления нет, и
  * отличить это от «начислено ноль» нечем.
  *
- * Коэффициенты Phase 3: сложность, качество и новизна равны единице —
- * рубрик нет, и повышающий множитель нельзя получить одной фразой «это S»
- * (docs/03, раздел 4). Постоянство тоже единица: оно считается по закрытым
- * дням, а закрытия дня ещё нет. Работает доказательство: самоотчёт, таймер или
- * устройство различаются по источнику факта.
+ * Коэффициенты Phase 3: сложность, качество и новизна равны единице — рубрик
+ * нет, и повышающий множитель нельзя получить одной фразой «это S» (docs/03,
+ * раздел 4). Работают доказательство и постоянство.
  */
 
 const NEUTRAL_BP = 10_000;
@@ -76,6 +76,37 @@ function inputHash(parts: Record<string, unknown>): string {
   return createHash('sha256').update(JSON.stringify(parts), 'utf8').digest('hex').slice(0, 32);
 }
 
+/**
+ * Успешные дни в окне постоянства.
+ *
+ * Пригодный день — тот, где развивающая работа была запланирована, то есть
+ * экземпляр задания существовал. Успешный — где хотя бы одно выполнено;
+ * минимум тоже считается успехом (docs/03, раздел 6).
+ *
+ * Окно отсчитывается по **пригодным** дням, а не по календарным: неделя
+ * отпуска не должна обнулять постоянство человека, который до неё занимался
+ * месяц. Сегодняшний день исключён — выполнение не поднимает множитель самому
+ * себе.
+ */
+async function successDays(
+  client: TransactionClient,
+  userId: string,
+  today: string,
+): Promise<number> {
+  const rows = await client.query<{ success: boolean }>(
+    `SELECT BOOL_OR(execution_status = 'completed') AS success
+       FROM quest_occurrences
+      WHERE user_id = $1
+        AND recurrence_key ~ '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+        AND recurrence_key < $2
+      GROUP BY recurrence_key
+      ORDER BY recurrence_key DESC
+      LIMIT $3`,
+    [userId, today, CONSISTENCY_WINDOW_DAYS],
+  );
+  return rows.rows.filter((row) => row.success).length;
+}
+
 export async function awardForActivity(
   client: TransactionClient,
   request: AwardRequest,
@@ -116,7 +147,7 @@ export async function awardForActivity(
     difficultyBp: NEUTRAL_BP,
     qualityBp: NEUTRAL_BP,
     evidenceBp: evidenceBasisPoints(request.source),
-    consistencyBp: NEUTRAL_BP,
+    consistencyBp: consistencyBasisPoints(await successDays(client, request.userId, bucketKey)),
     noveltyBp: NEUTRAL_BP,
   });
 
