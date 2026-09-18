@@ -24,13 +24,15 @@ RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
 STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
 RENAME_TESTS = 'tests/integration/telegram-rename.test.ts'
 LEDGER_TESTS = 'tests/integration/xp-ledger.test.ts'
+CLOSE_TESTS = 'tests/integration/day-close.test.ts'
+DAY_CLOSE = 'services/backend/src/modules/scheduling/day-close.ts'
 ENGINE = 'services/backend/src/modules/progression/engine.ts'
 AWARD = 'services/backend/src/modules/progression/award.ts'
 QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -138,6 +140,10 @@ add('global band counter', 'день ограничен полосами', "    
 add('award floor rounding', '45 минут, сложность C', '  const amountMxp = (weighted * RATE_MXP_PER_MINUTE * multipliers) / denominator;', '  const amountMxp = (weighted * RATE_MXP_PER_MINUTE * multipliers * 2n) / denominator;', ENGINE, 'tests/unit/progression-award.test.ts')
 add('band boundaries', '90 минут одной семьи', '    const chunk = Math.min(remaining, untilFamily, untilGlobal);', '    const chunk = remaining;', ENGINE, 'tests/unit/progression-award.test.ts')
 add('button reports planned measure', 'названа числом из квитанции', "    payload: token.action === 'complete_quest' ? await completionPayload(token.occurrence_id) : {},", '    payload: {},', INBOX, CANCEL_TESTS)
+
+# Закрытие дня: только прошедшего и только по границе самого человека.
+add('day still running', 'сегодняшнее не трогается', '    if (row.recurrence_key >= today) {', '    if (false) {', DAY_CLOSE, CLOSE_TESTS)
+add('own timezone', 'часовой пояс человека решает', 'const today = userDayAt(now(), row.timezone, row.day_boundary_minutes).localDate;', "const today = userDayAt(now(), 'Europe/Moscow', row.day_boundary_minutes).localDate;", DAY_CLOSE, CLOSE_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

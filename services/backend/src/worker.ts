@@ -1,5 +1,6 @@
 import { loadConfig } from './config.ts';
 import { buildAiProvider } from './modules/ai/providers/routing.ts';
+import { closeElapsedDays } from './modules/scheduling/day-close.ts';
 import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
 import {
@@ -78,6 +79,10 @@ async function main(): Promise<void> {
           ? { sent: 0, retried: 0, failed: 0, unknown: 0 }
           : await deliverPendingMessages(database, transport);
 
+      // Закрытие прошедших дней: без него несделанное вчера остаётся
+      // «запланированным» навсегда, и пропуск не отличается от «ещё успею».
+      const dayClose = await closeElapsedDays(database);
+
       const dispatched = await dispatchOutbox(database, { kinds: Object.keys(HANDLERS) });
       const batch = await runJobBatch(database, HANDLERS);
       if (
@@ -92,7 +97,9 @@ async function main(): Promise<void> {
         batch.done > 0 ||
         batch.retried > 0 ||
         batch.deadLettered > 0 ||
-        batch.leasesLost > 0
+        batch.leasesLost > 0 ||
+        dayClose.closed > 0 ||
+        dayClose.skipped > 0
       ) {
         console.log(
           `Обновлений Telegram: ${updates.processed}, ответов: ${updates.replies}; ` +
@@ -102,6 +109,7 @@ async function main(): Promise<void> {
             // накопление таких строк означает, что связь рвётся.
             `неизвестно: ${delivery.unknown}, отказов: ${delivery.failed}, ` +
             `оборвано: ${reaped}; ` +
+            `дней закрыто: ${dayClose.closed}, пропущено по версии: ${dayClose.skipped}; ` +
             `в очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
             `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}; ` +
             // Потерянная аренда означает, что проход шёл дольше её срока: это

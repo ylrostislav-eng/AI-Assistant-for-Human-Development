@@ -88,6 +88,13 @@ const COMMANDS = new Map<string, CommandDefinition>([
     },
   ],
   [
+    'close_user_day',
+    {
+      targetField: 'occurrence_id',
+      build: (request) => questTransitionHandler('close_user_day', request),
+    },
+  ],
+  [
     'cancel_quest',
     {
       targetField: 'occurrence_id',

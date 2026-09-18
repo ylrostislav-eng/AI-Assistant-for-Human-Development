@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/close_user_day.payload.schema.json",
+  "title": "CloseUserDayPayloadDraftV1",
+  "description": "Закрытие прошедшего дня: незавершённое становится пропущенным. Отправляется фоновым исполнителем, а не человеком, но идёт тем же контрактом и с той же обязательной версией. Цель принадлежит конверту.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "occurrence_id": { "type": "string", "format": "uuid" },
+    "expected_version": { "type": "integer", "minimum": 0 }
+  }
+}
