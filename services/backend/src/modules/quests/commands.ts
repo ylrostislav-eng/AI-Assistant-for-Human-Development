@@ -1,5 +1,6 @@
 import type { CommandContext, CommandOutcome, CommandRequest } from '../../shared/commands/bus.ts';
 import { InvalidCommandPayloadError } from '../goals/commands.ts';
+import { awardForActivity } from '../progression/award.ts';
 import {
   assertFactMatchesVariant,
   findAcceptedActivity,
@@ -47,6 +48,8 @@ interface LockedOccurrence {
   readonly execution_status: ExecutionStatus;
   readonly version: string;
   readonly template_snapshot: Record<string, unknown>;
+  /** Ведро убывающей отдачи: награда за третий час того же дела меньше первого. */
+  readonly template_id: string;
 }
 
 async function lockOccurrence(
@@ -55,7 +58,7 @@ async function lockOccurrence(
   expectedVersion: number | null,
 ): Promise<LockedOccurrence> {
   const current = await context.client.query<LockedOccurrence>(
-    `SELECT id, execution_status, version, template_snapshot
+    `SELECT id, execution_status, version, template_snapshot, template_id
        FROM quest_occurrences WHERE id = $1 FOR UPDATE`,
     [occurrenceId],
   );
@@ -293,6 +296,7 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
           : null;
 
     let activityId: string | null = null;
+    let awardedMxp: bigint | null = null;
     if (factVariant !== null) {
       const specs = specsOf(occurrence.template_snapshot);
       const fact = parseActivityFact(request.payload, specs.normal_spec);
@@ -305,6 +309,20 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         factVariant,
       );
       activityId = stored.id;
+
+      // Награда считается здесь же, а не отдельным заданием: иначе остаётся
+      // окно, где факт записан, а начисления нет, и отличить это от «начислено
+      // ноль» потом нечем.
+      const award = await awardForActivity(context.client, {
+        userId: context.userId,
+        activityId: stored.id,
+        activityRootId: stored.rootActivityId,
+        templateId: occurrence.template_id,
+        durationSeconds: fact.durationSeconds,
+        source: fact.source,
+        now: new Date(),
+      });
+      awardedMxp = award.amountMxp;
     }
 
     const updated = await context.client.query<{ version: string }>(
@@ -330,6 +348,10 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         version: row.version,
         ...(completionVariant === null ? {} : { variant: completionVariant }),
         ...(activityId === null ? {} : { activity_id: activityId }),
+        // Число уходит строкой: milli-XP не помещается в безопасное целое
+        // JavaScript навсегда, а тихая потеря точности в балансе — худший вид
+        // ошибки, потому что её не видно.
+        ...(awardedMxp === null ? {} : { awarded_global_mxp: awardedMxp.toString() }),
       },
       changes: [
         {
@@ -339,8 +361,6 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
           execution_status: target,
         },
       ],
-      // Награда считается отдельно детерминированным движком (Phase 3); здесь
-      // фиксируется только факт выполнения.
       events: [
         {
           kind: 'quest_status_changed',

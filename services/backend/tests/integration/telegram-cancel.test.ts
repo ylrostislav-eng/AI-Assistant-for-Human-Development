@@ -275,3 +275,33 @@ describe('кнопка «Убрать»', () => {
     expect((await quests(mine))[0]?.execution_status).toBe('planned');
   });
 });
+
+describe('награда в ответе', () => {
+  it('названа числом из квитанции движка', async () => {
+    const from = await withQuest();
+    await press(await buttonFor(from, 'Сделал'), from);
+    await run(from);
+
+    const reply = await lastReply(from);
+    // Тридцать минут по базовой ставке — 15 XP. Число берётся из квитанции, а
+    // не сочиняется ботом: сочинённое разойдётся с журналом.
+    expect(reply.body).toContain('15 XP');
+  });
+
+  it('ноль называется прямо, а не умалчивается', async () => {
+    const from = sender();
+    await deliver('/start', from);
+    await run(from);
+    await deliver('/new Чтение 20стр', from);
+    await run(from);
+    await deliver('/today', from);
+    await run(from);
+
+    await press(await buttonFor(from, 'Сделал'), from);
+    await run(from);
+
+    // Задание меряется количеством, а не временем: времени в награду нет.
+    // Промолчать значило бы дать понять, что награда была.
+    expect((await lastReply(from)).body).toContain('не начислено');
+  });
+});

@@ -23,11 +23,14 @@ CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
 RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
 STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
 RENAME_TESTS = 'tests/integration/telegram-rename.test.ts'
+LEDGER_TESTS = 'tests/integration/xp-ledger.test.ts'
+ENGINE = 'services/backend/src/modules/progression/engine.ts'
+AWARD = 'services/backend/src/modules/progression/award.ts'
 QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -96,7 +99,7 @@ add('manual path independence', 'не ломает ручной путь', "  if
 # Отмена задания: она не должна ни засчитываться выполнением, ни тихо
 # применяться к состоянию, которого человек не видел.
 add('cancel not completion', 'отмена не засчитывается как выполнение', "    const cancel = await issueActionToken(client, userId, quest, 'cancel_quest');", "    const cancel = await issueActionToken(client, userId, quest, 'complete_quest');", INBOX, CANCEL_TESTS)
-add('cancel wording', 'убирает задание из списка', "      ? { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' }", "      ? { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' }", INBOX, CANCEL_TESTS)
+add('cancel wording', 'убирает задание из списка', "      return { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' };", "      return { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' };", INBOX, CANCEL_TESTS)
 add('cancel version check', 'устаревшая кнопка даёт честный отказ', '    expected_version: Number(token.expected_version),', '    expected_version: null,', INBOX, CANCEL_TESTS)
 # Контроля на проверку владельца ключа здесь нет намеренно: снять её нельзя так,
 # чтобы проверка упала. Политика изоляции не покажет чужую строку и без неё, так
@@ -125,6 +128,16 @@ add('rename keeps history', 'прожитый день сохраняет пре
 add('rename touches live', 'меняет название шаблона и сегодняшнего задания', "    const renamed = await context.client.query(", '    const renamed = { rowCount: 0 };\n    await Promise.resolve(', QUEST_COMMANDS, RENAME_TESTS)
 add('rename ambiguity', 'два одинаковых названия переименовывать', '  if (matched.length > 1) {\n    // Тупик признаётся вслух', '  if (false) {\n    // Тупик признаётся вслух', INBOX, RENAME_TESTS)
 add('rename separator', 'строка без разделителя объясняет формат', '  if (separator === -1) {', '  if (false) {', INBOX, RENAME_TESTS)
+
+# Прогрессия: одна награда на одно выполнение, предел не обходится, полосы
+# считают чужие минуты, а число в ответе берётся из квитанции.
+add('award delta by root', 'не складывает награду дважды', "  const already = await sumOf(client, 'amount_mxp', 'user_id = $1 AND activity_root_id = $2', [", "  const already = 0n;\n  await sumOf(client, 'amount_mxp', 'user_id = $1 AND activity_root_id = $2', [", AWARD, LEDGER_TESTS)
+add('daily cap', 'дневной предел обрезает награду', '    headroom(DAILY_CAP_MXP, dayOther),', '    DAILY_CAP_MXP * 1000n,', AWARD, LEDGER_TESTS)
+add('rolling cap', 'скользящее окно обрезает награду', '    headroom(ROLLING_CAP_MXP, rollingOther),', '    ROLLING_CAP_MXP * 1000n,', AWARD, LEDGER_TESTS)
+add('global band counter', 'день ограничен полосами', "    'user_id = $1 AND bucket_key = $2 AND activity_root_id <> $3',\n    [request.userId, bucketKey, request.activityRootId],\n  );\n\n  const seconds", "    'user_id = $1 AND bucket_key = $2 AND activity_root_id <> $3 AND false',\n    [request.userId, bucketKey, request.activityRootId],\n  );\n\n  const seconds", AWARD, LEDGER_TESTS)
+add('award floor rounding', '45 минут, сложность C', '  const amountMxp = (weighted * RATE_MXP_PER_MINUTE * multipliers) / denominator;', '  const amountMxp = (weighted * RATE_MXP_PER_MINUTE * multipliers * 2n) / denominator;', ENGINE, 'tests/unit/progression-award.test.ts')
+add('band boundaries', '90 минут одной семьи', '    const chunk = Math.min(remaining, untilFamily, untilGlobal);', '    const chunk = remaining;', ENGINE, 'tests/unit/progression-award.test.ts')
+add('button reports planned measure', 'названа числом из квитанции', "    payload: token.action === 'complete_quest' ? await completionPayload(token.occurrence_id) : {},", '    payload: {},', INBOX, CANCEL_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

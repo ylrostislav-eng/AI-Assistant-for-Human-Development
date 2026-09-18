@@ -734,6 +734,28 @@ async function createQuestFromLine(
   };
 }
 
+/**
+ * Награда словами.
+ *
+ * Хранится она в milli-XP целым числом, а показывается в XP: тысячные доли
+ * человеку не нужны, но округлять в большую сторону нельзя — показанное должно
+ * сходиться с журналом, иначе сумма за неделю не совпадёт с суммой дней.
+ *
+ * Ноль называется прямо. Промолчать о нём значило бы дать понять, что награда
+ * была: выполнение без измеренного времени её не даёт, и лучше сказать об этом
+ * сразу, чем оставить человека гадать.
+ */
+function formatXp(milliXp: string): string {
+  const mxp = BigInt(milliXp);
+  if (mxp === 0n) {
+    return 'XP за это не начислено: время не измерено';
+  }
+  const whole = mxp / 1000n;
+  const fraction = (mxp < 0n ? -mxp : mxp) % 1000n;
+  const tail = fraction === 0n ? '' : `.${fraction.toString().padStart(3, '0').replace(/0+$/u, '')}`;
+  return `${whole}${tail} XP`;
+}
+
 /** Ответ, одинаковый для просроченного и несуществующего ключа. */
 const EXPIRED_BUTTON: Reply = {
   kind: 'expired_button',
@@ -776,6 +798,34 @@ async function handleButtonPress(
     [data, userId],
   );
 
+  /**
+   * Нагрузка нажатия.
+   *
+   * Отмечая «Сделал» у задания «Английский, 30 минут», человек подтверждает
+   * именно то определение, которое сам и задал. Это самоотчёт — множитель
+   * доказательства самый низкий, — а не выдача «сделал» за измеренные часы,
+   * которую запрещает docs/05, раздел 5: там речь о придуманной величине там,
+   * где её никто не назначал.
+   *
+   * Пустая нагрузка означала бы «выполнено, объём неизвестен», и основной
+   * способ отмечать выполнение не приносил бы ничего — RPG-слой существовал бы
+   * только на бумаге.
+   */
+  async function completionPayload(occurrenceId: string): Promise<Record<string, unknown>> {
+    const snapshot = await client.query<{ spec: { success_rule?: string; duration_seconds?: number; amount?: number } }>(
+      `SELECT template_snapshot -> 'normal_spec' AS spec FROM quest_occurrences WHERE id = $1`,
+      [occurrenceId],
+    );
+    const spec = snapshot.rows[0]?.spec;
+    if (spec?.success_rule === 'duration' && typeof spec.duration_seconds === 'number') {
+      return { actual_duration_seconds: spec.duration_seconds, source: 'self' };
+    }
+    if (spec?.success_rule === 'amount' && typeof spec.amount === 'number') {
+      return { actual_amount: spec.amount, source: 'self' };
+    }
+    return {};
+  }
+
   const token = found.rows[0];
   if (token === undefined) {
     return EXPIRED_BUTTON;
@@ -794,7 +844,7 @@ async function handleButtonPress(
     expected_version: Number(token.expected_version),
     client_created_at: new Date().toISOString(),
     depends_on_command_id: null,
-    payload: {},
+    payload: token.action === 'complete_quest' ? await completionPayload(token.occurrence_id) : {},
   });
 
   await client.query(
@@ -806,9 +856,20 @@ async function handleButtonPress(
   if (outcome.status === 'committed' || outcome.status === 'already_applied') {
     // Ответ называет сделанное своим именем. «Записал» после нажатия «Убрать»
     // читается как «выполнено», и человек решит, что задание засчитано.
-    return token.action === 'cancel_quest'
-      ? { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' }
-      : { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' };
+    if (token.action === 'cancel_quest') {
+      return { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' };
+    }
+    // Награда берётся из квитанции движка прогрессии, а не из текста здесь.
+    // Число, названное ботом от себя, разошлось бы с журналом, и сошлось бы
+    // оно только в тот день, когда человек перестал бы доверять обоим.
+    const awarded = outcome.result?.['awarded_global_mxp'];
+    return {
+      kind: 'button_done',
+      body:
+        typeof awarded === 'string'
+          ? `Записал. ${formatXp(awarded)}. Отправьте /today, чтобы увидеть остальное.`
+          : 'Записал. Отправьте /today, чтобы увидеть остальное.',
+    };
   }
 
   if (outcome.error === 'version_conflict' || outcome.error === 'invalid_transition') {
