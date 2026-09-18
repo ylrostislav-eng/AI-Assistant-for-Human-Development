@@ -87,9 +87,9 @@ Exit: Goal → scheduled quest → сохранённая Activity; ручной
 |---|---|---|
 | T-04a ✔ | Каталог, ToolGateway, runTurn, prompt `coach-1` | Закрытые схемы, ссылки/версии, пределы; DB tests и отрицательные контроли пройдены |
 | T-04b-1 ✔ | HTTP `openai-chat` / `anthropic-messages`, bounded fallback | Wire round-trip, errors/time/bytes, tool results между провайдерами; mocked HTTP, runTurn smoke, отрицательные контроли. Runtime/live wiring не входит |
-| T-04b-2 **следующая** | Versioned outbound privacy policy для system/user/tool context | Явный allowlist, health/raw notes/реальные имена не уходят, разрешённые факты обезличиваются; проверка каждого раунда и fallback, deny-by-default для непроверенного содержимого; негативные fixtures и снятие защиты |
-| T-04b-3 | Durable turns/tool results + бюджет каждой provider attempt | Один turn на update ID, RLS, lease/fencing, восстановление после commit→crash без нового эффекта; receipts доступны при отказе модели, суммы лимитов атомарны, неизвестная стоимость не считается нулём |
-| T-04b-4 | Runtime config, свободный текст бота, bounded live acceptance | Base/protocol/model/key из secret/config, первичная/резервная модели явно выбраны; synthetic live tool cycle, отказ/timeout/лимит; `/new`, `/today`, кнопки работают без AI; policy и durable budget из предыдущих срезов обязательны |
+| T-04b-2 ✔ | Versioned outbound privacy policy для system/user/tool context | Явный allowlist, health/raw notes/реальные имена не уходят, разрешённые факты обезличиваются; проверка каждого раунда и fallback, deny-by-default для непроверенного содержимого; негативные fixtures и снятие защиты |
+| T-04b-3 **следующая** | Durable turns/tool results + бюджет каждой provider attempt | Один turn на update ID, RLS, lease/fencing, восстановление после commit→crash без нового эффекта; receipts доступны при отказе модели, суммы лимитов атомарны, неизвестная стоимость не считается нулём |
+| T-04b-4 ◑ | Runtime config и свободный текст бота **сделаны вне очереди** (handoff 3.21, 3.22); bounded live acceptance — нет | Base/protocol/model/key из secret/config, первичная/резервная модели явно выбраны; synthetic live tool cycle, отказ/timeout/лимит; `/new`, `/today`, кнопки работают без AI; policy и durable budget из предыдущих срезов обязательны |
 
 T-04b в целом пока **не выполнена**. Только после её приёмки расширять AI
 до интервью цели, PlanDiff, памяти и полноценного ContextBuilder из таблицы ниже.

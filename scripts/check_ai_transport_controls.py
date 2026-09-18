@@ -27,6 +27,8 @@ LEDGER_TESTS = 'tests/integration/xp-ledger.test.ts'
 CLOSE_TESTS = 'tests/integration/day-close.test.ts'
 PROGRESS_TESTS = 'tests/integration/telegram-progress.test.ts'
 LEVELS = 'services/backend/src/modules/progression/levels.ts'
+EGRESS = 'services/backend/src/modules/ai/egress.ts'
+EGRESS_TESTS = 'tests/unit/ai-egress.test.ts'
 DAY_CLOSE = 'services/backend/src/modules/scheduling/day-close.ts'
 ENGINE = 'services/backend/src/modules/progression/engine.ts'
 AWARD = 'services/backend/src/modules/progression/award.ts'
@@ -34,7 +36,7 @@ QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS, EGRESS)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -158,6 +160,16 @@ add('consistency steps', 'успешных дней дают', '  const steps = 
 add('consistency ceiling', 'потолок не пробивается', '  const steps = Math.min(rules.max_steps, Math.floor(successDays / rules.days_per_step));', '  const steps = Math.floor(successDays / rules.days_per_step);', ENGINE, 'tests/unit/progression-award.test.ts')
 add('consistency excludes today', 'не поднимает множитель самому себе', "        AND recurrence_key < $2", "        AND recurrence_key <= $2", AWARD, LEDGER_TESTS)
 add('consistency applied', 'три успешных дня подряд', '    consistencyBp: consistencyBasisPoints(await successDays(client, request.userId, bucketKey)),', '    consistencyBp: NEUTRAL_BP,', AWARD, LEDGER_TESTS)
+
+# Политика исходящих: запрет по умолчанию, проверка у самого выхода и отказ,
+# не пересказывающий то, что отказался отправлять.
+add('egress allowlist', 'незнакомое поле в результате инструмента', '    if (!ALLOWED_RESULT_KEYS.has(key)) {', '    if (false) {', EGRESS, EGRESS_TESTS)
+add('egress identifiers', 'идентификаторы не уходят', '    if (UUID.test(value)) {', '    if (false) {', EGRESS, EGRESS_TESTS)
+add('egress framing', 'сообщение человека без обрамления', '      if (!UNTRUSTED_OPEN.test(message.content) || !UNTRUSTED_CLOSE.test(message.content)) {', '      if (false) {', EGRESS, EGRESS_TESTS)
+add('egress system prompt', 'чужая системная подсказка', '  if (!request.system.startsWith(`Версия правил: ${PROMPT_VERSION}`)) {', '  if (false) {', EGRESS, EGRESS_TESTS)
+add('egress unparsable', 'нечитаемый результат инструмента', "    throw new EgressPolicyError(`результат инструмента ${message.name} не разбирается`);", '    return;', EGRESS, EGRESS_TESTS)
+add('egress error redaction', 'в сообщении об ошибке нет самого содержимого', "      throw new EgressPolicyError(`поле ${path === '' ? key : `${path}.${key}`} не разрешено`);", "      throw new EgressPolicyError(`поле ${key} со значением ${String(nested)} не разрешено`);", EGRESS, EGRESS_TESTS)
+add('egress at transport exit', 'политика исходящих', '      assertOutboundAllowed(request);', '      void assertOutboundAllowed;', HTTP, TRANSPORT_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

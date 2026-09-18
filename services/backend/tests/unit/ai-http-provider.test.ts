@@ -2,6 +2,7 @@ import { inspect } from 'node:util';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import { toolCatalog } from '../../src/modules/ai/catalog.ts';
+import { systemPrompt, untrustedBlock } from '../../src/modules/ai/prompt.ts';
 import type { AiMessage, AiProvider, AiTurnRequest } from '../../src/modules/ai/provider.ts';
 import type { CommandReceiptSummary, ToolGateway } from '../../src/modules/ai/gateway.ts';
 import { runTurn } from '../../src/modules/ai/turn.ts';
@@ -10,9 +11,18 @@ import {
   type HttpAiProviderOptions,
 } from '../../src/modules/ai/providers/http.ts';
 
+// Запрос реалистичный, а не произвольный: у выхода стоит политика исходящих
+// (T-04b-2), и синтетика мимо неё проверяла бы транспорт на том, что наружу
+// всё равно не уйдёт.
+const TURN = '66666666-6666-4666-8666-666666666666';
 const request: AiTurnRequest = {
-  system: 'Тестовые правила',
-  messages: [{ role: 'user', content: 'Синтетическое задание' }],
+  system: systemPrompt(),
+  messages: [
+    {
+      role: 'user',
+      content: untrustedBlock({ turnId: TURN, source: 'telegram', text: 'Синтетическое задание' }),
+    },
+  ],
   tools: toolCatalog(),
 };
 const options: HttpAiProviderOptions = {
@@ -226,9 +236,39 @@ describe('HTTP AI: protocol boundary', () => {
     }
   });
 
+  it('политика исходящих останавливает запрос у самого выхода', async () => {
+    // Проверка стоит в транспорте, а не в шлюзе инструментов, ровно затем,
+    // чтобы срабатывать на путях, которые появятся позже и про политику знать
+    // не будут. Убедиться в этом можно только здесь.
+    const { provider, fetch } = setup();
+
+    await expect(
+      provider.generateTurn({ ...request, system: 'Чужая системная подсказка' }),
+    ).rejects.toThrow();
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it('политика исходящих действует и на запасного поставщика', async () => {
+    // Иначе отказ основного превращал бы запрещённые данные в разрешённые: тот
+    // же ход уходил бы второму поставщику без проверки.
+    const a = setup();
+    const b = setup();
+    await expect(
+      createFallbackAiProvider([a.provider, b.provider]).generateTurn({
+        ...request,
+        system: 'Чужая системная подсказка',
+      }),
+    ).rejects.toThrow();
+    expect(a.fetch).not.toHaveBeenCalled();
+    expect(b.fetch).not.toHaveBeenCalled();
+  });
+
   it('request size cap applies before HTTP', async () => {
     const { provider, fetch } = setup();
-    await expect(provider.generateTurn({ ...request, messages: [{ role: 'user', content: 'я'.repeat(140_000) }] })).rejects.toMatchObject({ code: 'invalid_request' });
+    // Сообщение обрамлено: предел размера проверяется после политики
+    // исходящих, и без обрамления запрос отсеялся бы раньше по другой причине.
+    const huge = untrustedBlock({ turnId: TURN, source: 'telegram', text: 'я'.repeat(140_000) });
+    await expect(provider.generateTurn({ ...request, messages: [{ role: 'user', content: huge }] })).rejects.toMatchObject({ code: 'invalid_request' });
     expect(fetch).not.toHaveBeenCalled();
   });
 
@@ -280,11 +320,11 @@ describe('bounded provider fallback', () => {
     const provider = createFallbackAiProvider([a.provider, b.provider]);
     expect((await provider.generateTurn({ ...request, messages: [...request.messages,
       { role: 'assistant', content: '', toolCalls: [{ id: 'done', name: 'complete_quest', arguments: { quest_ref: 'q1' } }] },
-      { role: 'tool', callId: 'done', name: 'complete_quest', content: '{"committed":true}' },
+      { role: 'tool', callId: 'done', name: 'complete_quest', content: '{"status":"committed"}' },
     ] })).text).toBe('Ответ');
     expect(a.fetch).toHaveBeenCalledTimes(1); expect(b.fetch).toHaveBeenCalledTimes(1);
     expect(sent(b.fetch).body.messages[0].content).toBe(request.messages[0]!.content);
-    expect(sent(b.fetch).body.messages[2].content).toEqual([{ type: 'tool_result', tool_use_id: 'done', content: '{"committed":true}' }]);
+    expect(sent(b.fetch).body.messages[2].content).toEqual([{ type: 'tool_result', tool_use_id: 'done', content: '{"status":"committed"}' }]);
   });
 
   it('auth/protocol failure is not silently retried or routed to another vendor', async () => {
@@ -349,7 +389,7 @@ describe('bounded provider fallback', () => {
     } }] }))).mockResolvedValueOnce(response({}, 503));
     const b = setup(anthropic(), { protocol: 'anthropic-messages' });
     const receipt: CommandReceiptSummary = { tool: 'complete_quest', status: 'committed', title: 'Тест', occurrenceId: 'synthetic', executionStatus: 'completed' };
-    const invoke = vi.fn<ToolGateway['invoke']>().mockResolvedValue({ callId: 'commit', name: 'complete_quest', status: 'ok', content: { committed: true }, receipt });
+    const invoke = vi.fn<ToolGateway['invoke']>().mockResolvedValue({ callId: 'commit', name: 'complete_quest', status: 'ok', content: { status: 'committed' }, receipt });
     const result = await runTurn({
       provider: createFallbackAiProvider([a.provider, b.provider]),
       gateway: { definitions: () => toolCatalog(), invoke, receipts: () => [receipt] },
@@ -359,6 +399,6 @@ describe('bounded provider fallback', () => {
     expect(invoke).toHaveBeenCalledTimes(1);
     expect(invoke).toHaveBeenCalledWith({ id: 'commit', name: 'complete_quest', arguments: { quest_ref: 'q1' } });
     expect(a.fetch).toHaveBeenCalledTimes(2); expect(b.fetch).toHaveBeenCalledTimes(1);
-    expect(sent(b.fetch).body.messages[2].content).toEqual([{ type: 'tool_result', tool_use_id: 'commit', content: '{"committed":true}' }]);
+    expect(sent(b.fetch).body.messages[2].content).toEqual([{ type: 'tool_result', tool_use_id: 'commit', content: '{"status":"committed"}' }]);
   });
 });

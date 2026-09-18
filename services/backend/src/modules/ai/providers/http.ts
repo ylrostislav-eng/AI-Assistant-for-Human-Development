@@ -1,3 +1,4 @@
+import { assertOutboundAllowed } from '../egress.ts';
 import type { AiMessage, AiProvider, AiTurnRequest, AiTurnResponse, ToolCall } from '../provider.ts';
 
 /** Transport only. Not wired to the bot until egress policy, durable turns and quotas exist. */
@@ -274,6 +275,10 @@ export function createHttpAiProvider(
   return {
     name: config.protocol,
     async generateTurn(request) {
+      // Политика исходящих стоит здесь, у самого выхода: так она срабатывает на
+      // каждом раунде и на каждом поставщике цепочки, включая пути, которые
+      // появятся позже и про неё знать не будут (T-04b-2).
+      assertOutboundAllowed(request);
       validateHistory(request.messages);
       let body: string;
       try {
