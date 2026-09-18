@@ -47,6 +47,29 @@ function createActionToken(): string {
   return randomUUID().replaceAll('-', '');
 }
 
+/**
+ * Выдача ключа кнопки.
+ *
+ * Версия снимается в момент показа списка и в ключе не меняется: нажатие по
+ * списку двухчасовой давности относится к состоянию, которого человек уже не
+ * видел, и должно упереться в конфликт.
+ */
+async function issueActionToken(
+  client: TransactionClient,
+  userId: string,
+  quest: { id: string; version: string },
+  action: 'complete_quest' | 'cancel_quest',
+): Promise<string> {
+  const token = createActionToken();
+  await client.query(
+    `INSERT INTO telegram_action_tokens
+       (token, user_id, occurrence_id, action, expected_version, command_id, expires_at)
+     VALUES ($1, $2, $3, $4, $5, gen_random_uuid(), now() + make_interval(hours => $6))`,
+    [token, userId, quest.id, action, Number(quest.version), ACTION_TOKEN_HOURS],
+  );
+  return token;
+}
+
 export interface ProcessOptions {
   /** Кто допущен к пилоту. Пустой список означает «никого». */
   readonly allowedUserIds: readonly string[];
@@ -149,15 +172,19 @@ async function composeToday(client: TransactionClient, userId: string): Promise<
     // Ключ выдаётся вместе с версией, снятой прямо сейчас, и со стабильным
     // идентификатором команды. Версия делает нажатие по устаревшему списку
     // честным конфликтом, а идентификатор — повторное нажатие безвредным.
-    const token = createActionToken();
-    await client.query(
-      `INSERT INTO telegram_action_tokens
-         (token, user_id, occurrence_id, action, expected_version, command_id, expires_at)
-       VALUES ($1, $2, $3, 'complete_quest', $4, gen_random_uuid(),
-               now() + make_interval(hours => $5))`,
-      [token, userId, quest.id, Number(quest.version), ACTION_TOKEN_HOURS],
-    );
-    buttons.push([{ text: `Сделал: ${title}`.slice(0, 64), callback_data: token }]);
+    // Два ключа на задание: отметить выполнение и убрать. Оба выдаются с одной
+    // и той же версией, снятой прямо сейчас, — значит любое из двух действий по
+    // устаревшему списку станет честным конфликтом, а не тихой правкой того,
+    // чего человек не видел.
+    const done = await issueActionToken(client, userId, quest, 'complete_quest');
+    const cancel = await issueActionToken(client, userId, quest, 'cancel_quest');
+    buttons.push([
+      { text: `Сделал: ${title}`.slice(0, 64), callback_data: done },
+      // Подпись без названия: она стоит в одном ряду с ним, а место в ряду
+      // ограничено. «Убрать», а не «Удалить»: строка остаётся, меняется
+      // состояние, и обещать стирание было бы неправдой.
+      { text: 'Убрать', callback_data: cancel },
+    ]);
   }
 
   return {
@@ -476,7 +503,11 @@ async function handleButtonPress(
   );
 
   if (outcome.status === 'committed' || outcome.status === 'already_applied') {
-    return { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' };
+    // Ответ называет сделанное своим именем. «Записал» после нажатия «Убрать»
+    // читается как «выполнено», и человек решит, что задание засчитано.
+    return token.action === 'cancel_quest'
+      ? { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' }
+      : { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' };
   }
 
   if (outcome.error === 'version_conflict' || outcome.error === 'invalid_transition') {

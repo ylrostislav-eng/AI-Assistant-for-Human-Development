@@ -19,6 +19,7 @@ INBOX = 'services/backend/src/modules/telegram/inbox.ts'
 TRANSPORT_TESTS = 'tests/unit/ai-http-provider.test.ts'
 ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
 BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
+CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
@@ -87,6 +88,17 @@ add('receipt gating', 'не подтверждает то, чего сервер
 add('honest unavailability', 'отвечает честно и ничего не выдумывает', "      kind: 'ai_unavailable',", "      kind: 'ai_reply',", INBOX, BOT_TESTS)
 add('turn id determinism', 'повтор того же обновления', "  const turnId = derivedCommandId('ai-turn', update.update_id);", '  const turnId = randomUUID();', INBOX, BOT_TESTS)
 add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new')) {", '  if (false) {', INBOX, BOT_TESTS)
+
+# Отмена задания: она не должна ни засчитываться выполнением, ни тихо
+# применяться к состоянию, которого человек не видел.
+add('cancel not completion', 'отмена не засчитывается как выполнение', "    const cancel = await issueActionToken(client, userId, quest, 'cancel_quest');", "    const cancel = await issueActionToken(client, userId, quest, 'complete_quest');", INBOX, CANCEL_TESTS)
+add('cancel wording', 'убирает задание из списка', "      ? { kind: 'button_cancelled', body: 'Убрал. Отправьте /today, чтобы увидеть остальное.' }", "      ? { kind: 'button_done', body: 'Записал. Отправьте /today, чтобы увидеть остальное.' }", INBOX, CANCEL_TESTS)
+add('cancel version check', 'устаревшая кнопка даёт честный отказ', '    expected_version: Number(token.expected_version),', '    expected_version: null,', INBOX, CANCEL_TESTS)
+# Контроля на проверку владельца ключа здесь нет намеренно: снять её нельзя так,
+# чтобы проверка упала. Политика изоляции не покажет чужую строку и без неё, так
+# что проверка в запросе — второй рубеж, а не единственный. Отсутствие контроля
+# тут означает «защита избыточна», а не «защита не проверена»; поставить
+# контроль, который не может упасть, значит соврать самим себе.
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)
