@@ -22,6 +22,7 @@ BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
 CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
 RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
 STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
+RENAME_TESTS = 'tests/integration/telegram-rename.test.ts'
 QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
@@ -117,6 +118,13 @@ add('stop title normalization', 'без учёта регистра', ".replace(
 # проверяла бы схему, а не код. Правдоподобная ошибка здесь другая — отменить
 # уже созданные дни заодно с повторением.
 add('stop keeps past days', 'сегодняшнее задание остаётся в списке', '    const updated = await context.client.query<{ version: string }>(\n      `UPDATE quest_templates SET recurrence = NULL', "    await context.client.query(\"UPDATE quest_occurrences SET execution_status = 'cancelled' WHERE template_id = $1\", [templateId]);\n    const updated = await context.client.query<{ version: string }>(\n      `UPDATE quest_templates SET recurrence = NULL", QUEST_COMMANDS, STOP_TESTS)
+
+# Переименование: живое берёт новое имя, прожитое сохраняет прежнее, и наугад
+# не переименовывается ничего.
+add('rename keeps history', 'прожитый день сохраняет прежнее название', "          AND execution_status IN ('planned', 'active', 'partial')", '', QUEST_COMMANDS, RENAME_TESTS)
+add('rename touches live', 'меняет название шаблона и сегодняшнего задания', "    const renamed = await context.client.query(", '    const renamed = { rowCount: 0 };\n    await Promise.resolve(', QUEST_COMMANDS, RENAME_TESTS)
+add('rename ambiguity', 'два одинаковых названия переименовывать', '  if (matched.length > 1) {\n    // Тупик признаётся вслух', '  if (false) {\n    // Тупик признаётся вслух', INBOX, RENAME_TESTS)
+add('rename separator', 'строка без разделителя объясняет формат', '  if (separator === -1) {', '  if (false) {', INBOX, RENAME_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

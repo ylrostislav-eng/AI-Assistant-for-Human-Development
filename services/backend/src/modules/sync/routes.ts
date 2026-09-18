@@ -12,6 +12,7 @@ import {
   parseCreateQuestTemplate,
   parseMaterializeOccurrence,
   questTransitionHandler,
+  renameQuestHandler,
   stopRecurrenceHandler,
   QuestNotFoundError,
   VersionConflictError,
@@ -100,6 +101,10 @@ const COMMANDS = new Map<string, CommandDefinition>([
   [
     'stop_recurrence',
     { targetField: 'template_id', build: (request) => stopRecurrenceHandler(request) },
+  ],
+  [
+    'rename_quest',
+    { targetField: 'template_id', build: (request) => renameQuestHandler(request) },
   ],
 ]);
 

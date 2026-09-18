@@ -468,3 +468,68 @@ export function stopRecurrenceHandler(request: CommandRequest) {
     };
   };
 }
+
+/**
+ * Переименование задания.
+ *
+ * Новое имя получает шаблон и снимки живых экземпляров. Именно снимки: их
+ * замораживают, чтобы правка шаблона не меняла условия уже прожитого дня, но
+ * название — не условие. Оставить в снимке старое имя значило бы, что человек
+ * исправил опечатку и не увидел исправления ровно там, где её и видел.
+ *
+ * Завершённые, пропущенные и отменённые дни сохраняют прежнее имя. Запись о
+ * сделанном не должна зависеть от сегодняшнего настроения: иначе через месяц в
+ * истории окажется не то, что было на самом деле (AGENTS.md: уже выполненное
+ * не переписывается).
+ */
+export function renameQuestHandler(request: CommandRequest) {
+  const templateId = request.targetId;
+  if (templateId === null) {
+    throw new InvalidCommandPayloadError('template_id обязателен');
+  }
+  const title = requireString(request.payload, 'title').trim();
+  if (title === '') {
+    throw new InvalidCommandPayloadError('title не может быть пустым');
+  }
+
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const current = await context.client.query<{ version: string }>(
+      'SELECT version FROM quest_templates WHERE id = $1 FOR UPDATE',
+      [templateId],
+    );
+    const template = current.rows[0];
+    if (template === undefined) {
+      throw new QuestNotFoundError('Шаблон задания не найден');
+    }
+    if (request.expectedVersion !== null && Number(template.version) !== request.expectedVersion) {
+      throw new VersionConflictError(
+        `Шаблон изменился: ожидалась версия ${request.expectedVersion}, текущая ${template.version}`,
+      );
+    }
+
+    const updated = await context.client.query<{ version: string }>(
+      `UPDATE quest_templates SET title = $2, version = version + 1, updated_at = now()
+        WHERE id = $1 RETURNING version`,
+      [templateId, title],
+    );
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw new Error('Название не изменено');
+    }
+
+    const renamed = await context.client.query(
+      `UPDATE quest_occurrences
+          SET template_snapshot = jsonb_set(template_snapshot, '{title}', to_jsonb($2::text)),
+              version = version + 1,
+              updated_at = now()
+        WHERE template_id = $1
+          AND execution_status IN ('planned', 'active', 'partial')`,
+      [templateId, title],
+    );
+
+    return {
+      result: { template_id: templateId, version: row.version, renamed_occurrences: renamed.rowCount ?? 0 },
+      changes: [{ entity: 'quest_template', id: templateId, operation: 'renamed' }],
+    };
+  };
+}

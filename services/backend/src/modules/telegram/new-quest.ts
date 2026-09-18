@@ -21,7 +21,7 @@ export type ParsedNewQuest =
   | { readonly ok: true; readonly title: string; readonly spec: EffortSpec }
   | { readonly ok: false; readonly hint: string };
 
-const MAX_TITLE_LENGTH = 200;
+export const MAX_TITLE_LENGTH = 200;
 
 /** Сутки в одном задании — почти наверняка опечатка, а не намерение. */
 const MAX_DURATION_SECONDS = 12 * 3600;

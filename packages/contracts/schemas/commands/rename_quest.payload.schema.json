@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/rename_quest.payload.schema.json",
+  "title": "RenameQuestPayloadDraftV1",
+  "description": "Новое название шаблона. Живые экземпляры берут его тоже, завершённые сохраняют прежнее: прожитый день не переписывается. Цель и ожидаемая версия принадлежат конверту.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "template_id": { "type": "string", "format": "uuid" },
+    "expected_version": { "type": "integer", "minimum": 0 },
+    "title": { "type": "string", "minLength": 1, "maxLength": 200 }
+  },
+  "required": ["title"]
+}

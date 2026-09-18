@@ -8,7 +8,7 @@ import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
 import { userDayAt } from '../../shared/time/user-day.ts';
 import { executeEnvelope } from '../sync/routes.ts';
-import { parseNewQuest } from './new-quest.ts';
+import { MAX_TITLE_LENGTH, parseNewQuest } from './new-quest.ts';
 
 /**
  * Разбор принятых обновлений Telegram (T-02b, docs/14, разделы 2 и 4).
@@ -240,6 +240,7 @@ async function composeReply(
         '/new Английский 30м — задание на сегодня',
         '/every Английский 30м — то же, но каждый день',
         '/stop Английский — перестать повторять',
+        '/rename Старое -> Новое — исправить название',
         '/today — показать задания с кнопками',
         '',
         'Награды, уровни и планирование появятся дальше — обещать их сейчас было бы нечестно.',
@@ -249,6 +250,10 @@ async function composeReply(
 
   if (text.startsWith('/today')) {
     return composeToday(db, client, update, userId, options.now ?? ((): Date => new Date()));
+  }
+
+  if (text.startsWith('/rename')) {
+    return renameQuest(db, client, update, userId, text, options);
   }
 
   if (text.startsWith('/stop')) {
@@ -268,7 +273,7 @@ async function composeReply(
   if (options.ai === undefined || options.ai === null) {
     return {
       kind: 'unknown_command',
-        body: 'Пока понимаю /new, /every, /stop и /today. Свободный разбор появится вместе с ИИ.',
+        body: 'Пока понимаю /new, /every, /stop, /rename и /today. Свободный разбор появится вместе с ИИ.',
     };
   }
 
@@ -476,6 +481,37 @@ function normalizeTitle(value: string): string {
   return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('ru');
 }
 
+interface TemplateRow {
+  readonly id: string;
+  readonly title: string;
+  readonly version: string;
+}
+
+/**
+ * Шаблоны человека: все или только повторяющиеся.
+ *
+ * Один источник на `/stop` и `/rename`. Два отдельных запроса разошлись бы в
+ * мелочах — в учёте удалённых, в пределе выборки, — и одна команда начала бы
+ * видеть то, чего не видит другая.
+ */
+async function ownTemplates(
+  client: TransactionClient,
+  onlyRepeating: boolean,
+): Promise<TemplateRow[]> {
+  const rows = await client.query<TemplateRow>(
+    `SELECT id, title, version FROM quest_templates
+      WHERE deleted_at IS NULL
+        AND ($1 = false OR recurrence ->> 'kind' = 'daily')
+      ORDER BY created_at LIMIT 50`,
+    [onlyRepeating],
+  );
+  return rows.rows;
+}
+
+function matchByTitle(rows: readonly TemplateRow[], wanted: string): TemplateRow[] {
+  return rows.filter((row) => normalizeTitle(row.title) === normalizeTitle(wanted));
+}
+
 /**
  * Прекращение повторения по названию.
  *
@@ -497,16 +533,12 @@ async function stopRecurrence(
   options: ProcessOptions,
 ): Promise<Reply> {
   await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
-  const repeating = await client.query<{ id: string; title: string; version: string }>(
-    `SELECT id, title, version FROM quest_templates
-      WHERE deleted_at IS NULL AND recurrence ->> 'kind' = 'daily'
-      ORDER BY created_at LIMIT 50`,
-  );
+  const repeating = await ownTemplates(client, true);
 
   const listing =
-    repeating.rowCount === 0
+    repeating.length === 0
       ? 'Сейчас ничего не повторяется.'
-      : ['Повторяются:', ...repeating.rows.map((row) => `• ${row.title}`)].join('\n');
+      : ['Повторяются:', ...repeating.map((row) => `• ${row.title}`)].join('\n');
 
   const wanted = line.trim().replace(/^\/stop(?:@\S+)?/iu, '');
   if (normalizeTitle(wanted) === '') {
@@ -516,9 +548,7 @@ async function stopRecurrence(
     };
   }
 
-  const matched = repeating.rows.filter(
-    (row) => normalizeTitle(row.title) === normalizeTitle(wanted),
-  );
+  const matched = matchByTitle(repeating, wanted);
   if (matched.length === 0) {
     return { kind: 'stop_not_found', body: [`Не нашёл повторяющегося: ${wanted.trim()}`, '', listing].join('\n') };
   }
@@ -529,7 +559,7 @@ async function stopRecurrence(
     };
   }
 
-  const template = matched[0] as { id: string; title: string; version: string };
+  const template = matched[0] as TemplateRow;
   const now = options.now ?? ((): Date => new Date());
   const outcome = await executeEnvelope(db, userId, {
     schema_version: 1,
@@ -555,6 +585,79 @@ async function stopRecurrence(
   return {
     kind: 'stop_done',
     body: `Больше не буду повторять: ${template.title}. Сегодняшнее задание останется в списке.`,
+  };
+}
+
+/**
+ * Переименование задания.
+ *
+ * Разделитель `->` явный, а не «первое слово — старое имя»: название из
+ * нескольких слов иначе не отделить от нового, и половина попыток
+ * переименовала бы не то. Делится по первому вхождению: название с двумя
+ * стрелками встречается реже, чем желание переименовать во что-то со стрелкой.
+ */
+async function renameQuest(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  line: string,
+  options: ProcessOptions,
+): Promise<Reply> {
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+
+  const usage: Reply = {
+    kind: 'rename_usage',
+    body: 'Как пользоваться: /rename Старое название -> Новое название',
+  };
+  const wanted = line.trim().replace(/^\/rename(?:@\S+)?/iu, '');
+  const separator = wanted.indexOf('->');
+  if (separator === -1) {
+    return usage;
+  }
+  const oldTitle = wanted.slice(0, separator);
+  const newTitle = wanted.slice(separator + 2).trim().replace(/\s+/gu, ' ');
+  if (normalizeTitle(oldTitle) === '' || newTitle === '' || newTitle.length > MAX_TITLE_LENGTH) {
+    return usage;
+  }
+
+  const all = await ownTemplates(client, false);
+  const matched = matchByTitle(all, oldTitle);
+  if (matched.length === 0) {
+    const listing =
+      all.length === 0 ? 'Заданий пока нет.' : ['Есть:', ...all.map((row) => `• ${row.title}`)].join('\n');
+    return { kind: 'rename_not_found', body: [`Не нашёл: ${oldTitle.trim()}`, '', listing].join('\n') };
+  }
+  if (matched.length > 1) {
+    // Тупик признаётся вслух, а не обходится выбором первого попавшегося:
+    // переименовать не то задание человек заметит не сразу.
+    return {
+      kind: 'rename_ambiguous',
+      body: `Так называются ${matched.length} задания, и я не знаю, которое вы имеете в виду. Уберите лишнее командой /stop или создайте новое с другим названием.`,
+    };
+  }
+
+  const template = matched[0] as TemplateRow;
+  const now = options.now ?? ((): Date => new Date());
+  const outcome = await executeEnvelope(db, userId, {
+    schema_version: 1,
+    command_id: derivedCommandId('rename', update.update_id),
+    device_id: derivedCommandId('rename', 'device', update.update_id),
+    kind: 'rename_quest',
+    aggregate_id: template.id,
+    expected_version: Number(template.version),
+    client_created_at: now().toISOString(),
+    depends_on_command_id: null,
+    payload: { title: newTitle },
+  });
+
+  if (outcome.status !== 'committed' && outcome.status !== 'already_applied') {
+    return { kind: 'rename_failed', body: 'Не получилось переименовать. Попробуйте ещё раз.' };
+  }
+
+  return {
+    kind: 'rename_done',
+    body: `Теперь это «${newTitle}». Уже завершённые дни сохранили прежнее название.`,
   };
 }
 
