@@ -418,3 +418,53 @@ export function correctActivityHandler(request: CommandRequest) {
     };
   };
 }
+
+/**
+ * Прекращение повторения.
+ *
+ * Трогает только шаблон: уже созданные экземпляры остаются на своих днях. В
+ * них записан прожитый день, и стирать его значило бы терять факт ради
+ * будущего решения. «Убрать» — это про один день, «не повторять» — про все
+ * следующие; человек пропускает день гораздо чаще, чем бросает дело.
+ *
+ * Отдельная команда, а не правка шаблона вообще: сузить её до одного поля
+ * значит гарантировать, что название и мера не изменятся заодно.
+ */
+export function stopRecurrenceHandler(request: CommandRequest) {
+  const templateId = request.targetId;
+  if (templateId === null) {
+    throw new InvalidCommandPayloadError('template_id обязателен');
+  }
+
+  return async (context: CommandContext): Promise<CommandOutcome> => {
+    const current = await context.client.query<{ version: string; recurrence: unknown }>(
+      'SELECT version, recurrence FROM quest_templates WHERE id = $1 FOR UPDATE',
+      [templateId],
+    );
+    const template = current.rows[0];
+    if (template === undefined) {
+      throw new QuestNotFoundError('Шаблон задания не найден');
+    }
+    if (request.expectedVersion !== null && Number(template.version) !== request.expectedVersion) {
+      throw new VersionConflictError(
+        `Шаблон изменился: ожидалась версия ${request.expectedVersion}, текущая ${template.version}`,
+      );
+    }
+
+    const updated = await context.client.query<{ version: string }>(
+      `UPDATE quest_templates SET recurrence = NULL, version = version + 1, updated_at = now()
+        WHERE id = $1 RETURNING version`,
+      [templateId],
+    );
+    const row = updated.rows[0];
+    if (row === undefined) {
+      throw new Error('Повторение не остановлено');
+    }
+
+    return {
+      result: { template_id: templateId, version: row.version },
+      changes: [{ entity: 'quest_template', id: templateId, operation: 'recurrence_stopped' }],
+      events: [{ kind: 'recurrence_stopped', payload: { template_id: templateId } }],
+    };
+  };
+}

@@ -239,6 +239,7 @@ async function composeReply(
         'Что умею сейчас:',
         '/new Английский 30м — задание на сегодня',
         '/every Английский 30м — то же, но каждый день',
+        '/stop Английский — перестать повторять',
         '/today — показать задания с кнопками',
         '',
         'Награды, уровни и планирование появятся дальше — обещать их сейчас было бы нечестно.',
@@ -248,6 +249,10 @@ async function composeReply(
 
   if (text.startsWith('/today')) {
     return composeToday(db, client, update, userId, options.now ?? ((): Date => new Date()));
+  }
+
+  if (text.startsWith('/stop')) {
+    return stopRecurrence(db, client, update, userId, text, options);
   }
 
   if (text.startsWith('/new') || text.startsWith('/every')) {
@@ -263,7 +268,7 @@ async function composeReply(
   if (options.ai === undefined || options.ai === null) {
     return {
       kind: 'unknown_command',
-        body: 'Пока понимаю /new, /every и /today. Свободный разбор появится вместе с ИИ.',
+        body: 'Пока понимаю /new, /every, /stop и /today. Свободный разбор появится вместе с ИИ.',
     };
   }
 
@@ -464,6 +469,93 @@ async function materializeRecurring(
       },
     );
   }
+}
+
+/** Название для сверки: регистр и лишние пробелы человеку не важны. */
+function normalizeTitle(value: string): string {
+  return value.trim().replace(/\s+/gu, ' ').toLocaleLowerCase('ru');
+}
+
+/**
+ * Прекращение повторения по названию.
+ *
+ * Сверка по названию, а не выбор из списка кнопками: остановка — действие
+ * редкое и обдуманное, а третья кнопка в ряду с «Сделал» и «Убрать» означала
+ * бы, что однажды её нажмут случайно и перестанут получать напоминания, не
+ * поняв почему.
+ *
+ * Ни пустой, ни неоднозначный запрос не выполняется наугад. Остановить не то
+ * задание — ошибка, которая обнаруживается через неделю тишины, и восстановить
+ * её причину человеку будет нечем.
+ */
+async function stopRecurrence(
+  db: Database,
+  client: TransactionClient,
+  update: PendingUpdate,
+  userId: string,
+  line: string,
+  options: ProcessOptions,
+): Promise<Reply> {
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  const repeating = await client.query<{ id: string; title: string; version: string }>(
+    `SELECT id, title, version FROM quest_templates
+      WHERE deleted_at IS NULL AND recurrence ->> 'kind' = 'daily'
+      ORDER BY created_at LIMIT 50`,
+  );
+
+  const listing =
+    repeating.rowCount === 0
+      ? 'Сейчас ничего не повторяется.'
+      : ['Повторяются:', ...repeating.rows.map((row) => `• ${row.title}`)].join('\n');
+
+  const wanted = line.trim().replace(/^\/stop(?:@\S+)?/iu, '');
+  if (normalizeTitle(wanted) === '') {
+    return {
+      kind: 'stop_usage',
+      body: [`Как пользоваться: /stop Английский`, '', listing].join('\n'),
+    };
+  }
+
+  const matched = repeating.rows.filter(
+    (row) => normalizeTitle(row.title) === normalizeTitle(wanted),
+  );
+  if (matched.length === 0) {
+    return { kind: 'stop_not_found', body: [`Не нашёл повторяющегося: ${wanted.trim()}`, '', listing].join('\n') };
+  }
+  if (matched.length > 1) {
+    return {
+      kind: 'stop_ambiguous',
+      body: `Так называются ${matched.length} задания. Переименуйте одно из них, чтобы я не остановил не то.`,
+    };
+  }
+
+  const template = matched[0] as { id: string; title: string; version: string };
+  const now = options.now ?? ((): Date => new Date());
+  const outcome = await executeEnvelope(db, userId, {
+    schema_version: 1,
+    command_id: derivedCommandId('stop', update.update_id),
+    device_id: derivedCommandId('stop', 'device', update.update_id),
+    kind: 'stop_recurrence',
+    aggregate_id: template.id,
+    // Версия снята в этой же транзакции: если шаблон успели изменить, остановка
+    // относится к состоянию, которого человек не видел.
+    expected_version: Number(template.version),
+    client_created_at: now().toISOString(),
+    depends_on_command_id: null,
+    payload: {},
+  });
+
+  if (outcome.status !== 'committed' && outcome.status !== 'already_applied') {
+    return {
+      kind: 'stop_failed',
+      body: 'Не получилось остановить повторение. Попробуйте ещё раз.',
+    };
+  }
+
+  return {
+    kind: 'stop_done',
+    body: `Больше не буду повторять: ${template.title}. Сегодняшнее задание останется в списке.`,
+  };
 }
 
 async function createQuestFromLine(

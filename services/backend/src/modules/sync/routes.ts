@@ -12,6 +12,7 @@ import {
   parseCreateQuestTemplate,
   parseMaterializeOccurrence,
   questTransitionHandler,
+  stopRecurrenceHandler,
   QuestNotFoundError,
   VersionConflictError,
 } from '../quests/commands.ts';
@@ -95,6 +96,10 @@ const COMMANDS = new Map<string, CommandDefinition>([
   [
     'correct_activity',
     { targetField: 'occurrence_id', build: (request) => correctActivityHandler(request) },
+  ],
+  [
+    'stop_recurrence',
+    { targetField: 'template_id', build: (request) => stopRecurrenceHandler(request) },
   ],
 ]);
 

@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://contracts.system.local/commands/stop_recurrence.payload.schema.json",
+  "title": "StopRecurrencePayloadDraftV1",
+  "description": "Прекратить повторение шаблона. Отменяет только будущие дни: уже созданные экземпляры остаются, потому что в них записан прожитый день. Цель и ожидаемая версия принадлежат конверту; дубликаты здесь допускаются лишь при совпадении с ним.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "template_id": { "type": "string", "format": "uuid" },
+    "expected_version": { "type": "integer", "minimum": 0 }
+  }
+}

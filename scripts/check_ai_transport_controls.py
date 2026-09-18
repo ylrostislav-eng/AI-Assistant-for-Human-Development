@@ -21,10 +21,12 @@ ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
 BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
 CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
 RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
+STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
+QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -107,6 +109,14 @@ add('recurring only', 'разовое задание на следующий д�
 add('once stays once', 'разовое задание на следующий день не появляется', "      ...(repeating ? { recurrence: { kind: 'daily' } } : {}),", "      recurrence: { kind: 'daily' },", INBOX, RECUR_TESTS)
 add('recurring clock', 'возвращается на следующий день', '  const day = await localDay(client, userId, now);\n  const templates', '  const day = await localDay(client, userId, () => new Date());\n  const templates', INBOX, RECUR_TESTS)
 add('every command', 'создаётся командой и сразу попадает', "  if (text.startsWith('/new') || text.startsWith('/every')) {", "  if (text.startsWith('/new')) {", INBOX, RECUR_TESTS)
+
+# Остановка повторения: не наугад и только про будущее.
+add('stop ambiguity', 'два одинаковых названия', '  if (matched.length > 1) {', '  if (false) {', INBOX, STOP_TESTS)
+add('stop title normalization', 'без учёта регистра', ".replace(/\\s+/gu, ' ').toLocaleLowerCase('ru');", ";", INBOX, STOP_TESTS)
+# Удалить экземпляры контролем нельзя: внешние ключи и так не дадут, и мутация
+# проверяла бы схему, а не код. Правдоподобная ошибка здесь другая — отменить
+# уже созданные дни заодно с повторением.
+add('stop keeps past days', 'сегодняшнее задание остаётся в списке', '    const updated = await context.client.query<{ version: string }>(\n      `UPDATE quest_templates SET recurrence = NULL', "    await context.client.query(\"UPDATE quest_occurrences SET execution_status = 'cancelled' WHERE template_id = $1\", [templateId]);\n    const updated = await context.client.query<{ version: string }>(\n      `UPDATE quest_templates SET recurrence = NULL", QUEST_COMMANDS, STOP_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)
