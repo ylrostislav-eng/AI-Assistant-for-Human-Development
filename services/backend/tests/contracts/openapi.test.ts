@@ -36,6 +36,7 @@ async function loadOpenApi(): Promise<OpenApiDocument> {
 const config: AppConfig = {
   environment: 'test',
   devAuthEnabled: false,
+  ai: null,
   telegram: {
     botToken: null,
     webhookSecret: null,

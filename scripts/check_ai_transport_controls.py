@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-"""Negative controls for T-04b-1 (synthetic HTTP, no DB or external requests).
+"""Negative controls for T-04b (synthetic HTTP, no DB or external requests).
 
-Run without simultaneous edits/tests of http.ts: temporarily mutates that file
-and restores it in finally. Optional positional bounds select [start, stop).
+Run without simultaneous edits/tests of the touched sources: temporarily mutates
+http.ts, routing.ts or config.ts and restores all of them in finally. Optional positional bounds select [start, stop).
 Detailed reports go to a unique temporary directory. Needs installed npm deps.
 """
 from pathlib import Path
@@ -12,11 +12,18 @@ ROOT = Path(__file__).resolve().parent.parent
 os.chdir(ROOT)
 ARTIFACTS = Path(tempfile.mkdtemp(prefix='ai-transport-controls-'))
 print(f'Reports: {ARTIFACTS}', flush=True)
-p = Path('services/backend/src/modules/ai/providers/http.ts')
-original = p.read_text()
+HTTP = 'services/backend/src/modules/ai/providers/http.ts'
+ROUTING = 'services/backend/src/modules/ai/providers/routing.ts'
+CONFIG = 'services/backend/src/config.ts'
+TRANSPORT_TESTS = 'tests/unit/ai-http-provider.test.ts'
+ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
+
+# Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
+# на середине, не должен оставить репозиторий с подменённым файлом.
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG)}
 cases = []
-def add(name, selector, old, new):
-    cases.append((name, selector, [(old, new)]))
+def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
+    cases.append((name, selector, [(old, new)], path, tests))
 add('wire allowlist', 'OpenAI: explicit fields', 'model: options.model, stream: false, store: false,', '...request, model: options.model, stream: false, store: false,')
 add('redirect restriction', 'OpenAI: explicit fields', "redirect: 'error'", "redirect: 'follow'")
 add('generation bound', 'OpenAI: explicit fields', 'max_completion_tokens: options.maxOutputTokens', 'max_completion_tokens: undefined')
@@ -28,12 +35,12 @@ cases.append(('OpenAI finish guard', 'does not execute incomplete/filtered', [
     ("  if (choice['finish_reason'] === 'length') throw new AiProviderError('truncated');\n", ''),
     ("  if (choice['finish_reason'] === 'content_filter') throw new AiProviderError('refused');\n", ''),
     ("  if (!['stop', 'tool_calls'].includes(String(choice['finish_reason']))) throw new AiProviderError('invalid_response');\n", ''),
-    ("  if ((choice['finish_reason'] === 'tool_calls') !== (calls.length > 0)) throw new AiProviderError('invalid_response');\n", '')]))
+    ("  if ((choice['finish_reason'] === 'tool_calls') !== (calls.length > 0)) throw new AiProviderError('invalid_response');\n", '')], HTTP, TRANSPORT_TESTS))
 cases.append(('Anthropic finish guard', 'rejects unfinished/unsupported', [
     ("  if (root['stop_reason'] === 'max_tokens') throw new AiProviderError('truncated');\n", ''),
     ("  if (root['stop_reason'] === 'refusal') throw new AiProviderError('refused');\n", ''),
     ("  if (!['end_turn', 'tool_use'].includes(String(root['stop_reason']))) throw new AiProviderError('invalid_response');\n", ''),
-    ("  if ((root['stop_reason'] === 'tool_use') !== (toolCalls.length > 0)) throw new AiProviderError('invalid_response');\n", '')]))
+    ("  if ((root['stop_reason'] === 'tool_use') !== (toolCalls.length > 0)) throw new AiProviderError('invalid_response');\n", '')], HTTP, TRANSPORT_TESTS))
 add('object arguments', 'rejects malformed/non-object', "arguments: object(parseJson(nonempty(fn['arguments'])))", "arguments: parseJson(nonempty(fn['arguments']))")
 add('malformed arguments', 'rejects malformed/non-object', "try { return JSON.parse(text) as unknown; } catch { throw new AiProviderError('invalid_response'); }", 'try { return JSON.parse(text) as unknown; } catch { return {}; }')
 add('unique response IDs', 'rejects duplicate tool IDs', "    if (ids.has(call.id)) throw new AiProviderError('invalid_response');", '')
@@ -62,20 +69,29 @@ add('fallback unknown error', 'unknown programming error', "if (!(error instance
 add('hard upper limits', 'hard upper caps', ' || value > max', '')
 add('integer limits', 'fails before network on invalid limits', ' || !Number.isSafeInteger(value)', '')
 add('bounded fallback config', 'requires one to three', "  if (providers.length < 1 || providers.length > 3) throw new AiProviderError('invalid_config');", '')
+# Выбор формата запроса и настройки: ошибка здесь не видна глазами, потому что
+# запрос выглядит правильным, а отказ неотличим от сбоя поставщика.
+add('protocol by family', 'модели Claude идут родной формой', "  ['claude-', 'anthropic-messages'],", "  ['claude-', 'openai-chat'],", ROUTING, ROUTING_TESTS)
+add('unknown family refusal', 'незнакомое семейство', "  if (found === undefined) {", '  if (false) {', ROUTING, ROUTING_TESTS)
+add('fallback family split', 'запасная модель того же семейства', "  if (familyOf(config.fallbackModel) === familyOf(primary)) {", '  if (false) {', ROUTING, ROUTING_TESTS)
+add('AI config completeness', 'ключ без адреса или без модели', "  const baseUrl = requireEnv('AI_BASE_URL', env).trim();", "  const baseUrl = (env['AI_BASE_URL'] ?? 'https://fallback.invalid/v1').trim();", CONFIG, ROUTING_TESTS)
+add('AI transport encryption', 'адрес не по https', "  if (!baseUrl.startsWith('https://')) {", '  if (false) {', CONFIG, ROUTING_TESTS)
+add('AI optional', 'без ключа ИИ просто нет', "    return null;\n  }\n\n  const baseUrl", "    throw new ConfigError('Не задан AI_API_KEY');\n  }\n\n  const baseUrl", CONFIG, ROUTING_TESTS)
+
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)
 if not 0 <= start < stop <= len(cases):
     raise SystemExit('Expected 0 <= start < stop <= ' + str(len(cases)))
 results = []
 try:
-    for index, (name, selector, replacements) in enumerate(cases[start:stop], start):
-        mutated = original
+    for index, (name, selector, replacements, path, tests) in enumerate(cases[start:stop], start):
+        mutated = originals[path]
         for old, new in replacements:
             if old not in mutated: raise RuntimeError(f'missing mutation {name}: {old}')
             mutated = mutated.replace(old, new)
-        p.write_text(mutated)
+        Path(path).write_text(mutated)
         out = ARTIFACTS / f'control-{index}.json'
-        run = subprocess.run(['npm','exec','--workspace','services/backend','--','vitest','run','tests/unit/ai-http-provider.test.ts','-t',selector,'--testTimeout','1000','--reporter=json',f'--outputFile={out}'], capture_output=True, text=True, timeout=30)
+        run = subprocess.run(['npm','exec','--workspace','services/backend','--','vitest','run',tests,'-t',selector,'--testTimeout','1000','--reporter=json',f'--outputFile={out}'], capture_output=True, text=True, timeout=30)
         (ARTIFACTS / f'control-{index}.log').write_text(run.stdout+run.stderr)
         report = json.loads(out.read_text()) if out.exists() else {}
         failed = [r for suite in report.get('testResults',[]) for r in suite.get('assertionResults',[]) if r.get('status')=='failed']
@@ -83,8 +99,9 @@ try:
         row = dict(index=index, control=name, caught=caught, failed=[r['fullName'] for r in failed])
         results.append(row)
         print(json.dumps(row,ensure_ascii=False),flush=True)
-        p.write_text(original)
+        Path(path).write_text(originals[path])
         if not caught: raise RuntimeError('Control did not fail as an assertion; inspect log')
 finally:
-    p.write_text(original)
+    for path, text in originals.items():
+        Path(path).write_text(text)
     (ARTIFACTS / 'summary.json').write_text(json.dumps(results,ensure_ascii=False,indent=2))

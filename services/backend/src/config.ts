@@ -39,6 +39,32 @@ export interface TelegramConfig {
   readonly futureSkewSeconds: number;
 }
 
+/**
+ * Доступ к модели. `null` означает «ИИ не настроен» — это рабочее состояние, а
+ * не ошибка: ручное управление обязано работать без провайдера (ADR-011), и
+ * отказ запуска здесь сделал бы недоступным то, что от модели не зависит.
+ *
+ * Поставщик задаётся адресом и именами моделей, а не выбором из зашитого
+ * списка (ADR-018). Доступ у владельца куплен через сторонний шлюз, шлюз может
+ * исчезнуть, и переезд должен быть сменой настроек.
+ */
+export interface AiConfig {
+  readonly baseUrl: string;
+  readonly apiKey: string;
+  readonly chatModel: string;
+  readonly planModel: string;
+  /**
+   * Запасная модель на случай отказа основной. `null` — перебора нет.
+   *
+   * Семейство обязано отличаться от основного: 17 сентября вся линия Claude
+   * лежала разом, пока модель другого семейства отвечала. Запасная из того же
+   * семейства ляжет вместе с основной и даст лишь видимость запаса.
+   */
+  readonly fallbackModel: string | null;
+  readonly timeoutMs: number;
+  readonly maxOutputTokens: number;
+}
+
 export interface AppConfig {
   readonly environment: 'development' | 'test' | 'production';
   readonly server: ServerConfig;
@@ -50,6 +76,7 @@ export interface AppConfig {
    */
   readonly devAuthEnabled: boolean;
   readonly telegram: TelegramConfig;
+  readonly ai: AiConfig | null;
 }
 
 export class ConfigError extends Error {}
@@ -128,12 +155,48 @@ function readTelegram(env: NodeJS.ProcessEnv): TelegramConfig {
   };
 }
 
+/**
+ * Настройки модели.
+ *
+ * Ключ решает, существует ли ИИ вообще. Если он есть, остальное обязательно:
+ * наполовину настроенный ИИ хуже ненастроенного — он выглядит рабочим до
+ * первого хода и падает уже в разговоре с человеком.
+ */
+function readAi(env: NodeJS.ProcessEnv): AiConfig | null {
+  const apiKey = env['AI_API_KEY']?.trim();
+  if (apiKey === undefined || apiKey === '') {
+    return null;
+  }
+
+  const baseUrl = requireEnv('AI_BASE_URL', env).trim();
+  if (!baseUrl.startsWith('https://')) {
+    // Ключ уходит заголовком: без шифрования его прочитает любой посредник по
+    // дороге, а не только тот, кому он предназначен.
+    throw new ConfigError(`AI_BASE_URL должен начинаться с https://, получено: ${baseUrl}`);
+  }
+
+  const fallback = env['AI_FALLBACK_MODEL']?.trim();
+  const chatModel = requireEnv('AI_CHAT_MODEL', env).trim();
+  return {
+    baseUrl,
+    apiKey,
+    chatModel,
+    // Тяжёлые задачи по умолчанию идут той же моделью: отдельная модель для
+    // планирования — уточнение, а не обязательное условие работы.
+    planModel: env['AI_PLAN_MODEL']?.trim() || chatModel,
+    fallbackModel: fallback === undefined || fallback === '' ? null : fallback,
+    timeoutMs: readInteger('AI_TIMEOUT_MS', env, 30_000),
+    maxOutputTokens: readInteger('AI_MAX_OUTPUT_TOKENS', env, 1024),
+  };
+}
+
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const environment = readEnvironment(env);
   return {
     environment,
     devAuthEnabled: readDevAuth(env, environment),
     telegram: readTelegram(env),
+    ai: readAi(env),
     server: {
       host: env['HOST'] ?? '127.0.0.1',
       port: readInteger('PORT', env, 3000),

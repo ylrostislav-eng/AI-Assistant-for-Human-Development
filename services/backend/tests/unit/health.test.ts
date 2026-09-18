@@ -7,6 +7,7 @@ import type { Database } from '../../src/shared/db/pool.ts';
 const config: AppConfig = {
   environment: 'test',
   devAuthEnabled: false,
+  ai: null,
   telegram: {
     botToken: null,
     webhookSecret: null,
