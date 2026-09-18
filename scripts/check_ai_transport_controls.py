@@ -25,6 +25,8 @@ STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
 RENAME_TESTS = 'tests/integration/telegram-rename.test.ts'
 LEDGER_TESTS = 'tests/integration/xp-ledger.test.ts'
 CLOSE_TESTS = 'tests/integration/day-close.test.ts'
+PROGRESS_TESTS = 'tests/integration/telegram-progress.test.ts'
+LEVELS = 'services/backend/src/modules/progression/levels.ts'
 DAY_CLOSE = 'services/backend/src/modules/scheduling/day-close.ts'
 ENGINE = 'services/backend/src/modules/progression/engine.ts'
 AWARD = 'services/backend/src/modules/progression/award.ts'
@@ -32,7 +34,7 @@ QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -144,6 +146,12 @@ add('button reports planned measure', 'названа числом из квит
 # Закрытие дня: только прошедшего и только по границе самого человека.
 add('day still running', 'сегодняшнее не трогается', '    if (row.recurrence_key >= today) {', '    if (false) {', DAY_CLOSE, CLOSE_TESTS)
 add('own timezone', 'часовой пояс человека решает', 'const today = userDayAt(now(), row.timezone, row.day_boundary_minutes).localDate;', "const today = userDayAt(now(), 'Europe/Moscow', row.day_boundary_minutes).localDate;", DAY_CLOSE, CLOSE_TESTS)
+
+# Уровни: порог точный, повышение объявляется только случившееся.
+add('level threshold search', 'ровно на пороге уровень уже получен', '    if (lifetimeThresholdMxp(middle) <= totalMxp) {', '    if (lifetimeThresholdMxp(middle) < totalMxp) {', LEVELS, 'tests/unit/progression-levels.test.ts')
+add('level integer division', 'на милли-XP меньше порога', '  let low = Math.floor(high / 2);', '  let low = high / 2;', LEVELS, 'tests/unit/progression-levels.test.ts')
+add('level up only when earned', 'без повышения об уровне не сообщается', "      outcome.result?.['leveled_up'] === true && typeof level === 'number'", "      typeof level === 'number'", INBOX, PROGRESS_TESTS)
+add('progress from ledger', 'показывает накопленное после выполнения', "    'SELECT COALESCE(SUM(amount_mxp), 0)::text AS total FROM xp_ledger WHERE user_id = $1',", "    'SELECT 0::text AS total FROM xp_ledger WHERE user_id = $1 LIMIT 1',", INBOX, PROGRESS_TESTS)
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

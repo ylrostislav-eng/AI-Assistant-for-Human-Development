@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { createToolGateway } from '../ai/gateway.ts';
 import type { AiProvider } from '../ai/provider.ts';
 import { runTurn, type TurnResult } from '../ai/turn.ts';
+import { lifetimeProgress } from '../progression/levels.ts';
 import { derivedCommandId } from '../../shared/commands/derived-id.ts';
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
 import { withTransaction } from '../../shared/db/pool.ts';
@@ -241,6 +242,7 @@ async function composeReply(
         '/every Английский 30м — то же, но каждый день',
         '/stop Английский — перестать повторять',
         '/rename Старое -> Новое — исправить название',
+        '/me — уровень и накопленное',
         '/today — показать задания с кнопками',
         '',
         'Награды, уровни и планирование появятся дальше — обещать их сейчас было бы нечестно.',
@@ -250,6 +252,10 @@ async function composeReply(
 
   if (text.startsWith('/today')) {
     return composeToday(db, client, update, userId, options.now ?? ((): Date => new Date()));
+  }
+
+  if (text.startsWith('/me')) {
+    return composeProgress(client, userId);
   }
 
   if (text.startsWith('/rename')) {
@@ -273,7 +279,7 @@ async function composeReply(
   if (options.ai === undefined || options.ai === null) {
     return {
       kind: 'unknown_command',
-        body: 'Пока понимаю /new, /every, /stop, /rename и /today. Свободный разбор появится вместе с ИИ.',
+        body: 'Пока понимаю /new, /every, /stop, /rename, /me и /today. Свободный разбор появится вместе с ИИ.',
     };
   }
 
@@ -513,6 +519,39 @@ function matchByTitle(rows: readonly TemplateRow[], wanted: string): TemplateRow
 }
 
 /**
+ * Накопленное и уровень.
+ *
+ * Числа читаются из журнала начислений, а не сочиняются здесь: показанное
+ * должно сходиться с записанным, иначе сумма за неделю не совпадёт с суммой
+ * дней, и доверять перестанут обоим.
+ *
+ * Ноль называется нулём. Все показатели начинаются с нуля (AGENTS.md), и
+ * спрятать это за бодрой формулировкой значит начать отношения со вранья.
+ */
+async function composeProgress(client: TransactionClient, userId: string): Promise<Reply> {
+  await client.query('SELECT set_config($1, $2, true)', ['app.user_id', userId]);
+  const rows = await client.query<{ total: string | null }>(
+    'SELECT COALESCE(SUM(amount_mxp), 0)::text AS total FROM xp_ledger WHERE user_id = $1',
+    [userId],
+  );
+  const total = BigInt(rows.rows[0]?.total ?? '0');
+  const progress = lifetimeProgress(total);
+  const left = progress.spanMxp - progress.intoMxp;
+
+  return {
+    kind: 'me',
+    body: [
+      `Уровень ${progress.level}, всего ${formatXp(total.toString(), { zero: '0 XP' })}.`,
+      `До следующего уровня — ${formatXp(left.toString(), { zero: '0 XP' })}.`,
+      '',
+      // Прямо сказано, чего ещё нет: показатель, который человек считает
+      // работающим, а он не работает, хуже отсутствующего.
+      'Характеристики, форма и навыки появятся дальше — пока считается только общий уровень.',
+    ].join('\n'),
+  };
+}
+
+/**
  * Прекращение повторения по названию.
  *
  * Сверка по названию, а не выбор из списка кнопками: остановка — действие
@@ -745,10 +784,10 @@ async function createQuestFromLine(
  * была: выполнение без измеренного времени её не даёт, и лучше сказать об этом
  * сразу, чем оставить человека гадать.
  */
-function formatXp(milliXp: string): string {
+function formatXp(milliXp: string, options: { zero?: string } = {}): string {
   const mxp = BigInt(milliXp);
   if (mxp === 0n) {
-    return 'XP за это не начислено: время не измерено';
+    return options.zero ?? 'XP за это не начислено: время не измерено';
   }
   const whole = mxp / 1000n;
   const fraction = (mxp < 0n ? -mxp : mxp) % 1000n;
@@ -863,11 +902,19 @@ async function handleButtonPress(
     // Число, названное ботом от себя, разошлось бы с журналом, и сошлось бы
     // оно только в тот день, когда человек перестал бы доверять обоим.
     const awarded = outcome.result?.['awarded_global_mxp'];
+    const level = outcome.result?.['lifetime_level'];
+    // О повышении сообщается только когда оно случилось. Говорить об уровне
+    // каждый раз значит обесценить то единственное сообщение, ради которого
+    // весь этот слой и нужен.
+    const levelUp =
+      outcome.result?.['leveled_up'] === true && typeof level === 'number'
+        ? ` Уровень ${level}!`
+        : '';
     return {
       kind: 'button_done',
       body:
         typeof awarded === 'string'
-          ? `Записал. ${formatXp(awarded)}. Отправьте /today, чтобы увидеть остальное.`
+          ? `Записал. ${formatXp(awarded)}.${levelUp} Отправьте /today, чтобы увидеть остальное.`
           : 'Записал. Отправьте /today, чтобы увидеть остальное.',
     };
   }

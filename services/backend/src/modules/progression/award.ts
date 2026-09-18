@@ -7,6 +7,7 @@ import {
   ROLLING_CAP_MXP,
   RULE_VERSION,
 } from './engine.ts';
+import { lifetimeLevel } from './levels.ts';
 import type { TransactionClient } from '../../shared/db/pool.ts';
 import { userDayAt } from '../../shared/time/user-day.ts';
 
@@ -45,6 +46,10 @@ export interface AwardOutcome {
   readonly amountMxp: bigint;
   readonly ruleVersion: string;
   readonly bucketKey: string;
+  /** Накопленное за всё время после этой записи. */
+  readonly lifetimeMxp: bigint;
+  readonly levelBefore: number;
+  readonly levelAfter: number;
 }
 
 async function sumOf(
@@ -181,5 +186,17 @@ export async function awardForActivity(
     ],
   );
 
-  return { amountMxp, ruleVersion: RULE_VERSION, bucketKey };
+  // Уровень считается по накопленному до и после записи. Сравнивать суммы, а
+  // не «прибавилось ли XP»: компенсирующая запись может увести накопленное
+  // вниз, и объявлять повышение по одному лишь факту начисления нельзя.
+  const lifetimeBefore = await sumOf(client, 'amount_mxp', 'user_id = $1', [request.userId]);
+  const lifetimeMxp = lifetimeBefore;
+  return {
+    amountMxp,
+    ruleVersion: RULE_VERSION,
+    bucketKey,
+    lifetimeMxp,
+    levelBefore: lifetimeLevel(lifetimeMxp - amountMxp),
+    levelAfter: lifetimeLevel(lifetimeMxp),
+  };
 }

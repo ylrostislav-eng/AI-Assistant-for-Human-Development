@@ -32,6 +32,13 @@ interface Band {
 interface ProgressionRules {
   readonly version: string;
   readonly milli_xp_per_xp: number;
+  readonly levels: {
+    readonly lifetime: {
+      readonly linear_mxp: number;
+      readonly quadratic_mxp: number;
+      readonly cubic_mxp: number;
+    };
+  };
   readonly reward: {
     readonly base_xp_per_minute: number;
     readonly family_bands: readonly Band[];

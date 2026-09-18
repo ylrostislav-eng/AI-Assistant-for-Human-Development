@@ -297,6 +297,9 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
 
     let activityId: string | null = null;
     let awardedMxp: bigint | null = null;
+    let lifetimeMxp: bigint | null = null;
+    let levelBefore = 0;
+    let levelAfter = 0;
     if (factVariant !== null) {
       const specs = specsOf(occurrence.template_snapshot);
       const fact = parseActivityFact(request.payload, specs.normal_spec);
@@ -323,6 +326,9 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         now: new Date(),
       });
       awardedMxp = award.amountMxp;
+      lifetimeMxp = award.lifetimeMxp;
+      levelBefore = award.levelBefore;
+      levelAfter = award.levelAfter;
     }
 
     const updated = await context.client.query<{ version: string }>(
@@ -352,6 +358,10 @@ export function questTransitionHandler(command: QuestCommand, request: CommandRe
         // JavaScript навсегда, а тихая потеря точности в балансе — худший вид
         // ошибки, потому что её не видно.
         ...(awardedMxp === null ? {} : { awarded_global_mxp: awardedMxp.toString() }),
+        ...(lifetimeMxp === null ? {} : { lifetime_global_mxp: lifetimeMxp.toString() }),
+        ...(lifetimeMxp === null ? {} : { lifetime_level: levelAfter }),
+        // Повышение объявляется только когда уровень действительно вырос.
+        ...(levelAfter > levelBefore ? { leveled_up: true } : {}),
       },
       changes: [
         {
