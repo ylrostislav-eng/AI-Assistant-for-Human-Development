@@ -56,10 +56,13 @@ DAY_CLOSE = 'services/backend/src/modules/scheduling/day-close.ts'
 ENGINE = 'services/backend/src/modules/progression/engine.ts'
 AWARD = 'services/backend/src/modules/progression/award.ts'
 QUEST_COMMANDS = 'services/backend/src/modules/quests/commands.ts'
+BUDGET = 'services/backend/src/modules/ai/budget.ts'
+ATTEMPTS_SQL = 'services/backend/db/migrations/022_ai_provider_attempts.sql'
+BUDGET_TESTS = 'tests/integration/ai-budget.test.ts'
 
 # Исходники читаются один раз и восстанавливаются все разом: контроль, упавший
 # на середине, не должен оставить репозиторий с подменённым файлом.
-originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS, EGRESS, TURN, TURN_STORE, TURN_STORE_SQL, BUS, SYNC, INTENTS, INTENTS_SQL, DURABLE, GATEWAY, GATEWAY_STATE)}
+originals = {path: Path(path).read_text() for path in (HTTP, ROUTING, CONFIG, INBOX, QUEST_COMMANDS, ENGINE, AWARD, DAY_CLOSE, LEVELS, EGRESS, TURN, TURN_STORE, TURN_STORE_SQL, BUS, SYNC, INTENTS, INTENTS_SQL, DURABLE, GATEWAY, GATEWAY_STATE, BUDGET, ATTEMPTS_SQL)}
 cases = []
 def add(name, selector, old, new, path=HTTP, tests=TRANSPORT_TESTS):
     cases.append((name, selector, [(old, new)], path, tests))
@@ -124,7 +127,9 @@ add('receipt gating', 'не подтверждает то, чего сервер
 # Честный отказ переехал из catch в ветку по stopReason: провайдерская ошибка
 # теперь ловится внутри runTurn. Подмена по старому месту ничего не роняла, то
 # есть защита стояла непроверенной.
-add('honest unavailability', 'отвечает честно и ничего не выдумывает', "        kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',", "        kind: 'ai_reply',", INBOX, BOT_TESTS)
+add('honest unavailability', 'отвечает честно и ничего не выдумывает',
+    "      return { kind: failed ? 'ai_unavailable' : 'ai_reply', body: renderTurn(outcome.result) };",
+    "      return { kind: 'ai_reply', body: renderTurn(outcome.result) };", INBOX, BOT_TESTS)
 # Контроля на вывод идентификатора хода больше нет: он стоял на прежнем,
 # неустойчивом разборе. Свойство переехало в хранилище ходов — повтор по той же
 # области возвращает сохранённый ход, а случайный идентификатор упирается в
@@ -210,8 +215,12 @@ add('failed request not counted as completed round', 'отказ первого 
 add('no turn retry after provider failure', 'отказ первого раунда возвращает пустой результат', "    } catch {\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "    } catch {\n      await options.provider.generateTurn(request).catch(() => undefined);\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
 add('gateway failures are not provider failures', 'ошибка исполнения инструмента не маскируется', '      const result = await options.gateway.invoke(call);', "      const result = await options.gateway.invoke(call).catch(() => ({ callId: call.id, name: call.name, status: 'rejected' as const, content: { error: 'masked' } }));", TURN, TURN_TESTS)
 add('Telegram displays committed receipt on outage', 'сохраняет подтверждение записи при отказе модели после commit', '  if (result.receipts.length > 0) {', '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
-add('Telegram distinguishes provider outage', 'сохраняет подтверждение записи при отказе модели после commit', "kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',", "kind: 'ai_reply',", INBOX, 'tests/integration/telegram-ai.test.ts')
-add('provider outage is not round limit', 'сохраняет подтверждение записи при отказе модели после commit', "  if (result.stopReason === 'provider_error') {", '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
+add('Telegram distinguishes provider outage', 'сохраняет подтверждение записи при отказе модели после commit',
+    "      return { kind: failed ? 'ai_unavailable' : 'ai_reply', body: renderTurn(outcome.result) };",
+    "      return { kind: 'ai_reply', body: renderTurn(outcome.result) };", INBOX, 'tests/integration/telegram-ai.test.ts')
+add('provider outage is not round limit', 'сохраняет подтверждение записи при отказе модели после commit',
+    "  } else if (result.stopReason === 'provider_error') {", '  } else if (false) {',
+    INBOX, 'tests/integration/telegram-ai.test.ts')
 
 # T-04b-3b1: durable storage, no tool execution or paid model calls.
 add('turn canonical semantic hash', 'replay preserves checkpoint', 'Object.getOwnPropertyNames(v).sort()', 'Object.getOwnPropertyNames(v)', TURN_STORE, STORE_TESTS)
@@ -340,6 +349,61 @@ add('exhausted answers', 'исчерпанные попытки дают отв�
 # схему, а не код. Само свойство закреплено проверками хранилища
 # (ai-turn-store, ai-durable-turn): повтор по прежней области возвращает
 # сохранённый ход, а не заводит второй.
+
+# --- T-04b-3c: бюджет обращений к поставщику -------------------------------
+#
+# Каждая подмена — правдоподобная ошибка, а не поломка: «не ронять ход из-за
+# учёта», «считать только закрытое», «отказ есть отказ». Все они выглядят
+# безобидно и стоят денег ровно в тот день, когда предел нужен.
+add('предел проверяется до вставки', 'одновременные ходы не переступают предел',
+    "if (Number(spent.rows[0]?.total ?? '0') + limits.estimateTokens > limits.windowTokens) {",
+    'if (false) {', path=BUDGET, tests=BUDGET_TESTS)
+add('блокировка на человека', 'одновременные ходы не переступают предел',
+    "await client.query('SELECT pg_advisory_xact_lock(hashtextextended($1, 0))', [\n          `ai_budget:${identity.userId}`,\n        ]);",
+    'await client.query(\'SELECT 1\');', path=BUDGET, tests=BUDGET_TESTS)
+add('незакрытый резерв занимает бюджет', 'незакрытый резерв занимает бюджет, пока не истёк',
+    "WHERE user_id = $1 AND reserved_at > now() - ${WINDOW}`",
+    "WHERE user_id = $1 AND state = 'settled' AND reserved_at > now() - ${WINDOW}`",
+    path=BUDGET, tests=BUDGET_TESTS)
+add('известный расход заменяет оценку', 'известный расход заменяет оценку',
+    'known ? total : limits.estimateTokens,', 'limits.estimateTokens,', path=BUDGET, tests=BUDGET_TESTS)
+add('неизвестный расход не символический', 'неизвестный расход остаётся оценкой и не равен нулю',
+    'known ? total : limits.estimateTokens,', 'known ? total : 1,', path=BUDGET, tests=BUDGET_TESTS)
+cases.append(('нулевой расход не считается фактом', 'нулевой расход от поставщика считается неизвестным',
+    [('const known = total > 0;', 'const known = usage !== undefined && usage !== null;'),
+     ('known ? total : limits.estimateTokens,', 'known ? Math.max(total, 1) : limits.estimateTokens,')],
+    BUDGET, BUDGET_TESTS))
+add('резерв ставится до HTTP', 'резерв ставится до HTTP',
+    "const ticket = await accounting.reserve({ provider: config.protocol, model: config.model });",
+    "const ticket = await accounting.reserve({ provider: config.protocol, model: config.model })\n        .catch(() => ({ settle: async () => {} }));",
+    path=HTTP, tests=BUDGET_TESTS)
+add('отказ поставщика тоже списывается', 'каждая попытка перебора считается отдельно',
+    '        await settle(null);\n        if (error instanceof AiProviderError) throw error;',
+    '        if (error instanceof AiProviderError) throw error;', path=HTTP, tests=BUDGET_TESTS)
+add('сверка не освобождает бюджет', 'брошенный резерв закрывается сверкой по оценке',
+    "SET state = 'settled', settled_at = clock_timestamp()",
+    "SET state = 'settled', settled_at = clock_timestamp(), charged_tokens = 1",
+    path=ATTEMPTS_SQL, tests=BUDGET_TESTS)
+add('сверка закрывает только незакрытое', 'брошенный резерв закрывается сверкой по оценке',
+    "WHERE state = 'reserved' AND expires_at <= clock_timestamp()",
+    'WHERE state IS NOT NULL AND expires_at <= clock_timestamp()',
+    path=ATTEMPTS_SQL, tests=BUDGET_TESTS)
+add('предел назван пределом', 'исчерпанный предел не доходит до модели',
+    "        ? 'Дневной предел обращений к ИИ исчерпан. Записанное выше сохранено; остальное не сделано.'\n        : 'Дневной предел обращений к ИИ исчерпан. Он восстановится в течение суток.',",
+    "        ? 'ИИ сейчас недоступен. Изменения не подтверждены.'\n        : 'ИИ сейчас недоступен. Изменения не подтверждены.',",
+    path=INBOX, tests=BUDGET_TESTS)
+add('предел не выдаётся за отказ поставщика', 'исчерпанный предел не доходит до модели',
+    "catch (error) { return finish(error instanceof BudgetExhaustedError ? 'budget_exhausted' : 'provider_error'); }",
+    'catch { return finish(\'provider_error\'); }', path=DURABLE, tests=BUDGET_TESTS)
+
+# Якоря проверяются все сразу, до первого запуска. Контроль, чей текст уехал при
+# правке исходника, иначе обнаруживался бы на середине прохода — через сорок
+# минут после старта и уже после того, как часть контролей отработала. Хуже
+# того, при беглом чтении такой обрыв легко принять за «всё прошло».
+missing = [(name, old) for name, _sel, reps, path, _t in cases for old, _new in reps if old not in originals[path]]
+if missing:
+    raise SystemExit('Якорь контроля не найден в исходнике:\n' + '\n'.join(f'  {n}: {o[:80]}' for n, o in missing))
+
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

@@ -1,5 +1,7 @@
 import { assertOutboundAllowed } from '../egress.ts';
-import type { AiMessage, AiProvider, AiTurnRequest, AiTurnResponse, ToolCall } from '../provider.ts';
+import type {
+  AiMessage, AiProvider, AiTurnRequest, AiTurnResponse, AttemptAccounting, ToolCall,
+} from '../provider.ts';
 
 /** Transport only. Not wired to the bot until egress policy, durable turns and quotas exist. */
 export interface HttpAiProviderOptions {
@@ -264,14 +266,30 @@ function parseAnthropic(data: unknown): AiTurnResponse {
   return { ...result, usage: { inputTokens: tokenCount(inputTokens), outputTokens: tokenCount(usage['output_tokens']) } };
 }
 
+/**
+ * Учёт, который ничего не считает.
+ *
+ * Только для проверок транспорта, где базы нет вовсе. В рабочих путях учёт
+ * обязателен и приходит из `buildAiProvider`: умолчание «не считать» здесь
+ * означало бы, что забытая зависимость молча отключает предел и замечается
+ * по счёту.
+ */
+export const unmeteredAttempts: AttemptAccounting = {
+  reserve: async () => ({ settle: async () => {} }),
+};
+
 export function createHttpAiProvider(
   options: HttpAiProviderOptions,
-  dependencies: { readonly fetch?: typeof globalThis.fetch } = {},
+  dependencies: {
+    readonly fetch?: typeof globalThis.fetch;
+    readonly accounting?: AttemptAccounting;
+  } = {},
 ): AiProvider {
   const url = endpoint(options);
   // Capture immutable config: another caller changing an object must not redirect credentials.
   const config = { ...options };
   const fetch = dependencies.fetch ?? globalThis.fetch;
+  const accounting = dependencies.accounting ?? unmeteredAttempts;
   return {
     name: config.protocol,
     async generateTurn(request) {
@@ -285,6 +303,19 @@ export function createHttpAiProvider(
         body = JSON.stringify(config.protocol === 'openai-chat' ? openAiBody(request, config) : anthropicBody(request, config));
       } catch { throw new AiProviderError('invalid_request'); }
       if (Buffer.byteLength(body) > 262_144) throw new AiProviderError('invalid_request');
+      // Резерв ставится здесь: после сборки тела — негодный запрос не уходит
+      // и платить за него не за что, — но строго **до** fetch. Проверять предел
+      // после ответа бессмысленно: деньги уже потрачены.
+      const ticket = await accounting.reserve({ provider: config.protocol, model: config.model });
+      let charged = false;
+      const settle = async (usage: AiTurnResponse['usage'] | null): Promise<void> => {
+        if (charged) return;
+        charged = true;
+        // Неудача учёта не отменяет ответ и не подменяет исходную ошибку:
+        // незакрытый резерв закроет сверка, по оценке. Потерять здесь ответ
+        // человека было бы хуже, чем разойтись в учёте на одну попытку.
+        await ticket.settle(usage).catch(() => {});
+      };
       const controller = new AbortController();
       let reader: ReadableStreamDefaultReader<Uint8Array> | undefined;
       let timer: ReturnType<typeof setTimeout> | undefined;
@@ -313,8 +344,15 @@ export function createHttpAiProvider(
         const data = parseJson(Buffer.concat(chunks).toString('utf8'));
         return config.protocol === 'openai-chat' ? parseOpenAi(data) : parseAnthropic(data);
       };
-      try { return await Promise.race([exchange(), deadline]); }
+      try {
+        const result = await Promise.race([exchange(), deadline]);
+        await settle(result.usage ?? null);
+        return result;
+      }
       catch (error) {
+        // Отказ расход не отменяет: запрос ушёл и был обработан, а счётчиков
+        // при отказе почти никогда нет — это та самая «неизвестная» попытка.
+        await settle(null);
         if (error instanceof AiProviderError) throw error;
         throw new AiProviderError(controller.signal.aborted ? 'timeout' : 'network_error');
       } finally {

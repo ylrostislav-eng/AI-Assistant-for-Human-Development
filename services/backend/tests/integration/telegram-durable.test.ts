@@ -62,7 +62,11 @@ async function deliver(text: string, from: string): Promise<number> {
 }
 
 async function run(from: string, ai: AiProvider | null = null): Promise<void> {
-  await processPendingUpdates(workerDb, { allowedUserIds: [from], ai });
+  // Провайдер собирается под каждый ход: здесь подставной, один и тот же.
+  await processPendingUpdates(workerDb, {
+    allowedUserIds: [from],
+    ai: ai === null ? null : () => ai,
+  });
 }
 
 async function lastReply(from: string): Promise<{ kind: string; body: string }> {

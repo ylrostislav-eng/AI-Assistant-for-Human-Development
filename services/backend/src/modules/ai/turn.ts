@@ -43,7 +43,17 @@ export interface TurnResult {
   readonly receipts: readonly CommandReceiptSummary[];
   readonly failures: readonly TurnFailure[];
   readonly rounds: number;
-  readonly stopReason: 'answered' | 'round_limit' | 'call_limit' | 'provider_error';
+  /**
+   * `budget_exhausted` отделён от `provider_error` намеренно: «предел исчерпан»
+   * и «поставщик лежит» требуют от человека разного, а один текст на оба случая
+   * заставляет ждать восстановления того, что и не ломалось.
+   */
+  readonly stopReason:
+    | 'answered'
+    | 'round_limit'
+    | 'call_limit'
+    | 'provider_error'
+    | 'budget_exhausted';
 }
 
 export async function runTurn(options: {

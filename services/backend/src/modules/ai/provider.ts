@@ -43,3 +43,31 @@ export interface AiProvider {
   readonly name: string;
   generateTurn(request: AiTurnRequest): Promise<AiTurnResponse>;
 }
+
+/**
+ * Учёт обращений на границе транспорта.
+ *
+ * Резерв ставится **до** HTTP, уточнение — после. Интерфейс живёт здесь, а
+ * реализация в `budget.ts`: транспорт не должен знать ни про базу, ни про то,
+ * чей это ход, иначе он перестанет быть заменимым (docs/05, раздел 2).
+ */
+export interface AttemptTicket {
+  /** `null` — поставщик не сказал расход. Это не ноль: попытка была. */
+  settle(usage: AiTurnResponse['usage'] | null): Promise<void>;
+}
+
+export interface AttemptAccounting {
+  reserve(attempt: { readonly provider: string; readonly model: string }): Promise<AttemptTicket>;
+}
+
+/**
+ * Провайдер под конкретный ход.
+ *
+ * Именно функция, а не готовый объект: списание привязано к человеку и ходу, и
+ * собранный один раз на старте провайдер записал бы все обращения на того, чьё
+ * сообщение пришло первым.
+ */
+export type AiProviderFactory = (identity: {
+  readonly userId: string;
+  readonly turnId: string;
+}) => AiProvider;

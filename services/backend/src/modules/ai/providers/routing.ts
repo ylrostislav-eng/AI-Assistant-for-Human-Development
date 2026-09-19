@@ -1,6 +1,8 @@
 import { ConfigError, type AiConfig } from '../../../config.ts';
-import type { AiProvider } from '../provider.ts';
-import { createHttpAiProvider, createFallbackAiProvider } from './http.ts';
+import { databaseAccounting, type BudgetLimits } from '../budget.ts';
+import type { AiProvider, AiProviderFactory, AttemptAccounting } from '../provider.ts';
+import type { Database } from '../../../shared/db/pool.ts';
+import { createHttpAiProvider, createFallbackAiProvider, unmeteredAttempts } from './http.ts';
 
 /**
  * Выбор формата запроса и сборка цепочки провайдеров.
@@ -46,8 +48,11 @@ function familyOf(model: string): string {
  * вместе с первой и создаст только видимость запаса, за которую потом
  * заплатят доверием.
  */
-export function buildAiProvider(config: AiConfig, model?: string): AiProvider {
-  const primary = model ?? config.chatModel;
+export function buildAiProvider(
+  config: AiConfig,
+  options: { readonly model?: string; readonly accounting: AttemptAccounting },
+): AiProvider {
+  const primary = options.model ?? config.chatModel;
   const limits = {
     baseUrl: config.baseUrl,
     apiKey: config.apiKey,
@@ -58,7 +63,10 @@ export function buildAiProvider(config: AiConfig, model?: string): AiProvider {
     maxResponseBytes: 262_144,
   };
 
-  const head = createHttpAiProvider({ ...limits, protocol: protocolFor(primary), model: primary });
+  const head = createHttpAiProvider(
+    { ...limits, protocol: protocolFor(primary), model: primary },
+    { accounting: options.accounting },
+  );
   if (config.fallbackModel === null) {
     return head;
   }
@@ -71,10 +79,39 @@ export function buildAiProvider(config: AiConfig, model?: string): AiProvider {
 
   return createFallbackAiProvider([
     head,
-    createHttpAiProvider({
-      ...limits,
-      protocol: protocolFor(config.fallbackModel),
-      model: config.fallbackModel,
-    }),
+    // Тот же учёт, что у основной: попытка перебора — отдельная попытка и
+    // отдельные деньги, а не бесплатное продолжение первой.
+    createHttpAiProvider(
+      { ...limits, protocol: protocolFor(config.fallbackModel), model: config.fallbackModel },
+      { accounting: options.accounting },
+    ),
   ]);
+}
+
+/**
+ * Провайдер, который собирается заново на каждый ход.
+ *
+ * Списание привязано к человеку и ходу, поэтому готовый объект тут не годится:
+ * собранный один раз на старте, он записал бы все обращения на того, чьё
+ * сообщение пришло первым.
+ *
+ * Настройка при этом проверяется **на старте**, а не на первом сообщении.
+ * Негодная модель или запасная того же семейства — ошибка развёртывания, и
+ * узнавать о ней из ответа «ИИ недоступен» значит не узнать вовсе.
+ */
+export function createAiProviderFactory(options: {
+  readonly config: AiConfig;
+  readonly database: Database;
+  readonly budget: BudgetLimits;
+  readonly model?: string;
+}): AiProviderFactory {
+  const model = options.model;
+  const shape = model === undefined ? {} : { model };
+  buildAiProvider(options.config, { ...shape, accounting: unmeteredAttempts });
+
+  return (identity) =>
+    buildAiProvider(options.config, {
+      ...shape,
+      accounting: databaseAccounting(options.database, identity, options.budget),
+    });
 }

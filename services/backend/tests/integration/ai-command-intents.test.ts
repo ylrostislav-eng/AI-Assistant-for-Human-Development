@@ -31,7 +31,9 @@ beforeAll(async () => {
   runtime = createPool({ ...config.database, connectionString: url.toString(), maxConnections: 3 });
   url.username = 'app_worker'; worker = createPool({ ...config.database, connectionString: url.toString(), maxConnections: 3 });
   upgraded = await started();
-  expect((await runMigrations(owner)).applied).toEqual(['021_ai_command_intents.sql']);
+  // Именно первой: смысл проверки — что 021 ложится поверх старой базы. Полный
+  // список здесь ломался бы от каждой следующей миграции, не обнаружив ничего.
+  expect((await runMigrations(owner)).applied[0]).toBe('021_ai_command_intents.sql');
 });
 afterAll(async () => { await runtime?.end(); await worker?.end(); if (owner) { await resetSchema(owner); await owner.end(); } });
 const caught = (promise: Promise<unknown>) => promise.catch((e: unknown) => e);

@@ -5,6 +5,8 @@
  * момента, когда приложение уже работает с чужими данными.
  */
 
+import { DEFAULT_BUDGET, type BudgetLimits } from './modules/ai/budget.ts';
+
 export interface DatabaseConfig {
   readonly connectionString: string;
   readonly maxConnections: number;
@@ -63,6 +65,13 @@ export interface AiConfig {
   readonly fallbackModel: string | null;
   readonly timeoutMs: number;
   readonly maxOutputTokens: number;
+  /**
+   * Предел обращений за скользящие сутки и оценка попытки до ответа.
+   *
+   * Живёт в настройках, а не в коде: цена и щедрость доступа меняются вместе с
+   * поставщиком, и переезд не должен требовать правки исходников.
+   */
+  readonly budget: BudgetLimits;
 }
 
 export interface AppConfig {
@@ -162,6 +171,23 @@ function readTelegram(env: NodeJS.ProcessEnv): TelegramConfig {
  * наполовину настроенный ИИ хуже ненастроенного — он выглядит рабочим до
  * первого хода и падает уже в разговоре с человеком.
  */
+function readBudget(env: NodeJS.ProcessEnv): BudgetLimits {
+  const budget: BudgetLimits = {
+    windowTokens: readInteger('AI_BUDGET_TOKENS_PER_DAY', env, DEFAULT_BUDGET.windowTokens),
+    estimateTokens: readInteger('AI_ATTEMPT_ESTIMATE_TOKENS', env, DEFAULT_BUDGET.estimateTokens),
+    reservationMs: readInteger('AI_ATTEMPT_RESERVATION_MS', env, DEFAULT_BUDGET.reservationMs),
+  };
+  if (budget.estimateTokens > budget.windowTokens) {
+    // Иначе ни одно обращение не пройдёт никогда, а выглядеть это будет как
+    // «ИИ недоступен»: отказ на запуске называет причину сразу.
+    throw new ConfigError(
+      `AI_ATTEMPT_ESTIMATE_TOKENS (${budget.estimateTokens}) больше суточного предела ` +
+        `(${budget.windowTokens}): ни одно обращение не пройдёт`,
+    );
+  }
+  return budget;
+}
+
 function readAi(env: NodeJS.ProcessEnv): AiConfig | null {
   const apiKey = env['AI_API_KEY']?.trim();
   if (apiKey === undefined || apiKey === '') {
@@ -187,6 +213,7 @@ function readAi(env: NodeJS.ProcessEnv): AiConfig | null {
     fallbackModel: fallback === undefined || fallback === '' ? null : fallback,
     timeoutMs: readInteger('AI_TIMEOUT_MS', env, 30_000),
     maxOutputTokens: readInteger('AI_MAX_OUTPUT_TOKENS', env, 1024),
+    budget: readBudget(env),
   };
 }
 

@@ -7,7 +7,7 @@ import {
   resumeDurableTurn,
 } from '../ai/durable-turn.ts';
 import { createToolGateway, type CommandReceiptSummary } from '../ai/gateway.ts';
-import type { AiProvider } from '../ai/provider.ts';
+import type { AiProviderFactory } from '../ai/provider.ts';
 import { readTurn } from '../ai/turn-store.ts';
 import { type TurnResult } from '../ai/turn.ts';
 import { lifetimeProgress } from '../progression/levels.ts';
@@ -88,7 +88,7 @@ export interface ProcessOptions {
    * Это рабочее состояние, а не поломка: команды и кнопки не зависят от
    * провайдера (ADR-011), а шлюз за два дня наблюдений падал дважды.
    */
-  readonly ai?: AiProvider | null;
+  readonly ai?: AiProviderFactory | null;
   /**
    * Часы. Нужны проверкам: «появится ли задание завтра» иначе не проверить
    * иначе как ожиданием суток, а непроверенное повторение — это задание,
@@ -311,6 +311,9 @@ function describeReceipt(receipt: { title?: string; executionStatus?: string }):
   return `• ${what} — ${receipt.executionStatus === 'completed' ? 'выполнено' : 'записано'}`;
 }
 
+/** Что человек может сделать прямо сейчас, без модели. Повторяется всюду, где модели нет. */
+const MANUAL_PATH = 'Работает как обычно: /new Английский 30м — записать задание, /today — список с кнопками.';
+
 function renderTurn(result: TurnResult): string {
   const parts: string[] = [];
   const text = result.text.trim();
@@ -328,7 +331,16 @@ function renderTurn(result: TurnResult): string {
       'Не получилось выполнить все запрошенные действия. Отправьте /today, чтобы увидеть, как есть сейчас.',
     );
   }
-  if (result.stopReason === 'provider_error') {
+  if (result.stopReason === 'budget_exhausted') {
+    // Названа настоящая причина и срок: «ИИ недоступен» отправило бы человека
+    // ждать восстановления того, что не ломалось, и пробовать снова впустую.
+    parts.push(
+      result.receipts.length > 0
+        ? 'Дневной предел обращений к ИИ исчерпан. Записанное выше сохранено; остальное не сделано.'
+        : 'Дневной предел обращений к ИИ исчерпан. Он восстановится в течение суток.',
+    );
+    parts.push(MANUAL_PATH);
+  } else if (result.stopReason === 'provider_error') {
     parts.push(result.receipts.length > 0
       ? 'ИИ сейчас недоступен. Записанные изменения показаны выше; дальнейшие действия не подтверждены.'
       : 'ИИ сейчас недоступен. Изменения не подтверждены.');
@@ -379,10 +391,7 @@ function exhaustedReply(receipts: readonly CommandReceiptSummary[]): Reply {
     // Промолчать о записанном значит заставить человека сделать это второй раз.
     lines.push('', 'Но записать успел:', ...receipts.map(describeReceipt));
   }
-  lines.push(
-    '',
-    'Работает как обычно: /new Английский 30м — записать задание, /today — список с кнопками.',
-  );
+  lines.push('', MANUAL_PATH);
   return { kind: 'ai_unavailable', body: lines.join('\n') };
 }
 
@@ -404,7 +413,7 @@ async function durableAiReply(
     readonly userId: string;
     readonly update: PendingUpdate;
     readonly text: string;
-    readonly provider: AiProvider;
+    readonly ai: AiProviderFactory;
   },
 ): Promise<Reply | null> {
   // Область хода включает бота: один и тот же номер обновления у разных ботов
@@ -429,14 +438,16 @@ async function durableAiReply(
       database: db,
       userId: request.userId,
       turnId,
-      provider: request.provider,
+      // Провайдер собирается под этот ход: списание привязано к человеку и
+      // ходу, и общий на всех объект записал бы обращения не на того.
+      provider: request.ai({ userId: request.userId, turnId }),
     });
 
     if (outcome.status === 'finished') {
-      return {
-        kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',
-        body: renderTurn(outcome.result),
-      };
+      const failed =
+        outcome.result.stopReason === 'provider_error' ||
+        outcome.result.stopReason === 'budget_exhausted';
+      return { kind: failed ? 'ai_unavailable' : 'ai_reply', body: renderTurn(outcome.result) };
     }
 
     // Захватить ход не удалось. Причин две, и они требуют разного: ход ведёт
@@ -1151,16 +1162,16 @@ export async function processPendingUpdates(
   });
 
   let replies = first.replies;
-  const provider = options.ai ?? null;
+  const ai = options.ai ?? null;
   for (const item of deferred) {
-    if (provider === null) {
+    if (ai === null) {
       continue;
     }
     const reply = await durableAiReply(db, {
       userId: item.userId,
       update: item.update,
       text: item.text,
-      provider,
+      ai,
     });
     if (reply === null) {
       // Ход держит другой процесс: ответ поставит он. Второй ответ на одно

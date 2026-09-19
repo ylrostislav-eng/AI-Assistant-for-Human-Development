@@ -10,6 +10,7 @@ import { withTenantTransaction } from '../../shared/db/tenant.ts';
 import { userDayAt } from '../../shared/time/user-day.ts';
 import { systemPrompt, untrustedBlock } from './prompt.ts';
 import type { IntentSnapshot } from './command-intents.ts';
+import { BudgetExhaustedError } from './budget.ts';
 export const DURABLE_TURN_VERSIONS = { prompt: 'coach-1', policy: 'egress-1', checkpoint: 'durable-turn-1' } as const;
 export interface DurableLimits { readonly maxRounds: number; readonly maxToolCalls: number; readonly maxCalls: number; readonly maxMutations: number }
 export interface OpenDurableTurnOptions {
@@ -47,7 +48,7 @@ const failureSchema = { type: 'object', additionalProperties: false, required: [
 } };
 const resultSchema = { type: 'object', additionalProperties: false, required: ['text', 'receipts', 'failures', 'rounds', 'stopReason'], properties: {
   text, receipts: { type: 'array', maxItems: 64, items: receiptSchema }, failures: { type: 'array', maxItems: 64, items: failureSchema },
-  rounds: integer(16), stopReason: { enum: ['answered', 'round_limit', 'call_limit', 'provider_error'] },
+  rounds: integer(16), stopReason: { enum: ['answered', 'round_limit', 'call_limit', 'provider_error', 'budget_exhausted'] },
 } };
 const limitsSchema = { type: 'object', additionalProperties: false, required: Object.keys(DEFAULT_LIMITS), properties: {
   maxRounds: integer(16, 1), maxToolCalls: integer(64, 1), maxCalls: integer(64, 1), maxMutations: integer(64),
@@ -171,7 +172,9 @@ export async function resumeDurableTurn(options: { readonly database: Database; 
     lease = (await renewTurnLease(options.database, options.userId, lease, options.leaseMs ?? 120_000)).lease;
     let response: AiTurnResponse;
     try { response = await options.provider.generateTurn({ system: state.system, messages: structuredClone(state.messages), tools: gateway.definitions() }); }
-    catch { return finish('provider_error'); }
+    // Исчерпанный предел — не отказ поставщика: обращения не было, и говорить
+    // человеку «ИИ недоступен» значит отправить его ждать того, что не сломано.
+    catch (error) { return finish(error instanceof BudgetExhaustedError ? 'budget_exhausted' : 'provider_error'); }
     let safe: AiTurnResponse;
     try { safe = document({ text: response.text, toolCalls: response.toolCalls }) as unknown as AiTurnResponse; }
     catch { return invalid(); }

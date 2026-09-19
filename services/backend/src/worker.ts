@@ -1,5 +1,6 @@
 import { loadConfig } from './config.ts';
-import { buildAiProvider } from './modules/ai/providers/routing.ts';
+import { reconcileExpiredAttempts } from './modules/ai/budget.ts';
+import { createAiProviderFactory } from './modules/ai/providers/routing.ts';
 import { closeElapsedDays } from './modules/scheduling/day-close.ts';
 import { loadEnvFile } from './shared/config/load-env.ts';
 import { dispatchOutbox, runJobBatch, type JobHandler } from './modules/sync/worker.ts';
@@ -41,10 +42,16 @@ async function main(): Promise<void> {
   const transport =
     config.telegram.botToken === null ? null : createBotApiTransport(config.telegram.botToken);
 
-  // Провайдер собирается один раз: разбор настроек и проверка семейств моделей
-  // должны падать на старте, а не на первом сообщении человека. Отсутствие
-  // ключа — рабочее состояние: бот продолжает понимать команды и кнопки.
-  const ai = config.ai === null ? null : buildAiProvider(config.ai);
+  // Настройки разбираются и проверяются на старте, а сам провайдер собирается
+  // под каждый ход: списание привязано к человеку и ходу, и общий на всех
+  // объект записал бы все обращения на того, чьё сообщение пришло первым.
+  // Отсутствие ключа — рабочее состояние: бот продолжает понимать команды и
+  // кнопки.
+  const aiConfig = config.ai;
+  const ai =
+    aiConfig === null
+      ? null
+      : createAiProviderFactory({ config: aiConfig, database, budget: aiConfig.budget });
   if (ai === null) {
     console.log('ИИ не настроен: свободный текст разбираться не будет');
   }
@@ -83,6 +90,11 @@ async function main(): Promise<void> {
       // «запланированным» навсегда, и пропуск не отличается от «ещё успею».
       const dayClose = await closeElapsedDays(database);
 
+      // Резервы, брошенные умершим процессом, закрываются по оценке. Оставить
+      // их незакрытыми значит навсегда занять ими бюджет человека; освободить —
+      // открыть способ не платить, падая вовремя.
+      const attempts = await reconcileExpiredAttempts(database);
+
       const dispatched = await dispatchOutbox(database, { kinds: Object.keys(HANDLERS) });
       const batch = await runJobBatch(database, HANDLERS);
       if (
@@ -99,7 +111,8 @@ async function main(): Promise<void> {
         batch.deadLettered > 0 ||
         batch.leasesLost > 0 ||
         dayClose.closed > 0 ||
-        dayClose.skipped > 0
+        dayClose.skipped > 0 ||
+        attempts > 0
       ) {
         console.log(
           `Обновлений Telegram: ${updates.processed}, ответов: ${updates.replies}; ` +
@@ -110,6 +123,7 @@ async function main(): Promise<void> {
             `неизвестно: ${delivery.unknown}, отказов: ${delivery.failed}, ` +
             `оборвано: ${reaped}; ` +
             `дней закрыто: ${dayClose.closed}, пропущено по версии: ${dayClose.skipped}; ` +
+            `брошенных обращений закрыто: ${attempts}; ` +
             `в очередь: ${dispatched.queued}; только записано: ${dispatched.recordedOnly}; выполнено: ${batch.done}; ` +
             `к повтору: ${batch.retried}; в dead_letter: ${batch.deadLettered}; ` +
             // Потерянная аренда означает, что проход шёл дольше её срока: это

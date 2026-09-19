@@ -102,6 +102,9 @@ async function viaProvider(
   protocol: 'openai-chat' | 'anthropic-messages',
   model: string,
 ): Promise<Attempt> {
+  // Без учёта расхода намеренно: проверка запускается руками, базы у неё может
+  // не быть вовсе, а её собственный предел — число запросов в самом сценарии.
+  // Рабочие пути собирают провайдера через buildAiProvider, где учёт обязателен.
   const provider = createHttpAiProvider({ protocol, baseUrl: BASE_URL, apiKey: KEY, model, ...LIMITS });
   try {
     const result = await provider.generateTurn(request);

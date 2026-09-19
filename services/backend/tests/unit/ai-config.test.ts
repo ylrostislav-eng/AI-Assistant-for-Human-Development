@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import { loadConfig, ConfigError, type AppConfig } from '../../src/config.ts';
 import { protocolFor, buildAiProvider } from '../../src/modules/ai/providers/routing.ts';
+import { unmeteredAttempts } from '../../src/modules/ai/providers/http.ts';
 
 /**
  * Настройки ИИ и выбор формата запроса.
@@ -116,7 +117,7 @@ describe('сборка провайдера', () => {
   it('основная модель идёт первой, запасная — второй', () => {
     const ai = loadConfig(FULL).ai;
     expect(ai).not.toBeNull();
-    const provider = buildAiProvider(ai!);
+    const provider = buildAiProvider(ai!, { accounting: unmeteredAttempts });
     // Имя составное: по нему видно и порядок, и выбранные форматы. Перебор из
     // одной модели не является перебором, и это должно быть заметно.
     expect(provider.name).toBe('fallback');
@@ -125,7 +126,7 @@ describe('сборка провайдера', () => {
   it('без запасной модели перебора нет, но провайдер работает', () => {
     const env = { ...FULL };
     delete (env as Record<string, string | undefined>)['AI_FALLBACK_MODEL'];
-    const provider = buildAiProvider(loadConfig(env).ai!);
+    const provider = buildAiProvider(loadConfig(env).ai!, { accounting: unmeteredAttempts });
     expect(provider.name).toBe('anthropic-messages');
   });
 
@@ -135,7 +136,9 @@ describe('сборка провайдера', () => {
     // запасная из того же семейства ляжет вместе с основной и создаст лишь
     // видимость запаса (handoff 3.19).
     expect(() =>
-      buildAiProvider(loadConfig({ ...FULL, AI_FALLBACK_MODEL: 'claude-opus-5' }).ai!),
+      buildAiProvider(loadConfig({ ...FULL, AI_FALLBACK_MODEL: 'claude-opus-5' }).ai!, {
+        accounting: unmeteredAttempts,
+      }),
     ).toThrow(ConfigError);
   });
 });
