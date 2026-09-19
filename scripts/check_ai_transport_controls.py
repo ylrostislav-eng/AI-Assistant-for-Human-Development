@@ -117,7 +117,10 @@ add('AI optional', 'без ключа ИИ просто нет', "    return nul
 # из слов модели, и мёртвая модель не должна выглядеть поломкой бота.
 add('failure disclosure', 'не подтверждает то, чего сервер не записал', '  if (result.failures.length > 0) {', '  if (false) {', INBOX, BOT_TESTS)
 add('receipt gating', 'не подтверждает то, чего сервер не записал', '  if (result.receipts.length > 0) {', '  if (true) {', INBOX, BOT_TESTS)
-add('honest unavailability', 'отвечает честно и ничего не выдумывает', "      kind: 'ai_unavailable',", "      kind: 'ai_reply',", INBOX, BOT_TESTS)
+# Честный отказ переехал из catch в ветку по stopReason: провайдерская ошибка
+# теперь ловится внутри runTurn. Подмена по старому месту ничего не роняла, то
+# есть защита стояла непроверенной.
+add('honest unavailability', 'отвечает честно и ничего не выдумывает', "  return { kind: result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply', body: renderTurn(result) };", "  return { kind: 'ai_reply', body: renderTurn(result) };", INBOX, BOT_TESTS)
 add('turn id determinism', 'повтор того же обновления', "  const turnId = derivedCommandId('ai-turn', update.update_id);", '  const turnId = randomUUID();', INBOX, BOT_TESTS)
 add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new') || text.startsWith('/every')) {", '  if (false) {', INBOX, BOT_TESTS)
 

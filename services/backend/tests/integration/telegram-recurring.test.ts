@@ -29,9 +29,17 @@ import { resetSchema } from '../helpers/reset-schema.ts';
 const BOT_TOKEN = '7654321:AAH-синтетический-токен-для-проверок';
 const WEBHOOK_SECRET = 'секрет-вебхука-повторов';
 
+/**
+ * Даты намеренно далеко от настоящего дня.
+ *
+ * Раньше здесь стояло 18–19 сентября 2026 года, и 19 сентября подставные часы
+ * стали неотличимы от системных: отрицательный контроль «взять системные часы
+ * вместо переданных» перестал ловиться, а проверка осталась зелёной. Дата
+ * рядом с настоящей превращает проверку часов в проверку календаря.
+ */
 /** Полдень по Москве: далеко от границы пользовательского дня в 04:00. */
-const TODAY = new Date('2026-09-18T09:00:00Z');
-const TOMORROW = new Date('2026-09-19T09:00:00Z');
+const TODAY = new Date('2019-03-05T09:00:00Z');
+const TOMORROW = new Date('2019-03-06T09:00:00Z');
 
 let ownerDb: Database;
 let runtimeDb: Database;
@@ -163,7 +171,7 @@ describe('повторяющееся задание', () => {
     await deliver('/today', from);
     await run(from);
     expect((await lastReply(from)).body).toContain('Английский');
-    expect(await occurrences(from)).toEqual([{ key: '2026-09-18', status: 'planned' }]);
+    expect(await occurrences(from)).toEqual([{ key: '2019-03-05', status: 'planned' }]);
   });
 
   it('повторный показ списка не создаёт второй экземпляр', async () => {
@@ -188,8 +196,8 @@ describe('повторяющееся задание', () => {
     await run(from, TOMORROW);
 
     expect(await occurrences(from)).toEqual([
-      { key: '2026-09-18', status: 'planned' },
-      { key: '2026-09-19', status: 'planned' },
+      { key: '2019-03-05', status: 'planned' },
+      { key: '2019-03-06', status: 'planned' },
     ]);
   });
 
@@ -204,7 +212,7 @@ describe('повторяющееся задание', () => {
 
     // Задание, всплывающее обратно после того, как его убрали, — причина
     // перестать доверять списку целиком.
-    expect(await occurrences(from)).toEqual([{ key: '2026-09-18', status: 'cancelled' }]);
+    expect(await occurrences(from)).toEqual([{ key: '2019-03-05', status: 'cancelled' }]);
     expect((await lastReply(from)).body).toContain('Сегодня заданий нет');
   });
 
@@ -230,7 +238,7 @@ describe('повторяющееся задание', () => {
 
     // `/new` — это «сегодня», и молчаливое превращение его в ежедневное
     // означало бы, что система сама решила за человека.
-    expect(await occurrences(from)).toEqual([{ key: '2026-09-18', status: 'planned' }]);
+    expect(await occurrences(from)).toEqual([{ key: '2019-03-05', status: 'planned' }]);
   });
 
   it('подсказка называет обе команды', async () => {

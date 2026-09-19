@@ -28,7 +28,15 @@ let workerDb: Database;
 
 const MOSCOW = 'Europe/Moscow';
 /** Полдень 19 сентября по Москве: 18-е уже прошло, 19-е идёт. */
-const NOW = new Date('2026-09-19T09:00:00Z');
+/**
+ * Даты намеренно далеко от настоящего дня.
+ *
+ * Раньше здесь стояло 18–19 сентября 2026 года, и 19 сентября подставные часы
+ * стали неотличимы от системных: отрицательный контроль «взять системные часы
+ * вместо переданных» перестал ловиться, а проверка осталась зелёной. Дата
+ * рядом с настоящей превращает проверку часов в проверку календаря.
+ */
+const NOW = new Date('2019-03-06T09:00:00Z');
 
 async function createUser(timezone = MOSCOW, boundaryMinutes = 240): Promise<string> {
   const userId = randomUUID();
@@ -113,7 +121,7 @@ afterAll(async () => {
 describe('закрытие прошедшего дня', () => {
   it('несделанное вчера становится пропущенным', async () => {
     const userId = await createUser();
-    const quest = await makeQuest(userId, '2026-09-18');
+    const quest = await makeQuest(userId, '2019-03-05');
 
     const result = await closeElapsedDays(workerDb, { now: () => NOW });
 
@@ -125,7 +133,7 @@ describe('закрытие прошедшего дня', () => {
 
   it('сегодняшнее не трогается', async () => {
     const userId = await createUser();
-    const quest = await makeQuest(userId, '2026-09-19');
+    const quest = await makeQuest(userId, '2019-03-06');
 
     await closeElapsedDays(workerDb, { now: () => NOW });
 
@@ -136,7 +144,7 @@ describe('закрытие прошедшего дня', () => {
 
   it('частично выполненное не превращается в пропуск', async () => {
     const userId = await createUser();
-    const quest = await makeQuest(userId, '2026-09-18');
+    const quest = await makeQuest(userId, '2019-03-05');
     await executeEnvelope(
       workerDb,
       userId,
@@ -155,7 +163,7 @@ describe('закрытие прошедшего дня', () => {
 
   it('выполненное вчера остаётся выполненным', async () => {
     const userId = await createUser();
-    const quest = await makeQuest(userId, '2026-09-18');
+    const quest = await makeQuest(userId, '2019-03-05');
     await executeEnvelope(
       workerDb,
       userId,
@@ -169,7 +177,7 @@ describe('закрытие прошедшего дня', () => {
 
   it('повторный проход ничего не меняет', async () => {
     const userId = await createUser();
-    const quest = await makeQuest(userId, '2026-09-18');
+    const quest = await makeQuest(userId, '2019-03-05');
 
     await closeElapsedDays(workerDb, { now: () => NOW });
     const after = await statusOf(quest);
@@ -185,9 +193,9 @@ describe('граница дня', () => {
     // Граница в 04:00 по Москве. В 02:00 по Москве 19-го «вчера» ещё идёт:
     // человек, работающий за полночь, не должен получить пропуск посреди дела.
     const userId = await createUser(MOSCOW, 240);
-    const quest = await makeQuest(userId, '2026-09-18');
+    const quest = await makeQuest(userId, '2019-03-05');
 
-    await closeElapsedDays(workerDb, { now: () => new Date('2026-09-18T23:00:00Z') });
+    await closeElapsedDays(workerDb, { now: () => new Date('2019-03-05T23:00:00Z') });
 
     expect((await statusOf(quest)).status).toBe('planned');
   });
@@ -196,12 +204,12 @@ describe('граница дня', () => {
     // Во Владивостоке 19-е наступило на семь часов раньше московского.
     const early = await createUser('Asia/Vladivostok', 240);
     const late = await createUser('Europe/Lisbon', 240);
-    const earlyQuest = await makeQuest(early, '2026-09-18', 'Владивосток');
-    const lateQuest = await makeQuest(late, '2026-09-18', 'Лиссабон');
+    const earlyQuest = await makeQuest(early, '2019-03-05', 'Владивосток');
+    const lateQuest = await makeQuest(late, '2019-03-05', 'Лиссабон');
 
     // 18 сентября, 20:00 UTC: во Владивостоке уже 19-е после границы,
     // в Лиссабоне ещё 18-е.
-    await closeElapsedDays(workerDb, { now: () => new Date('2026-09-18T20:00:00Z') });
+    await closeElapsedDays(workerDb, { now: () => new Date('2019-03-05T20:00:00Z') });
 
     expect((await statusOf(earlyQuest)).status).toBe('missed');
     expect((await statusOf(lateQuest)).status).toBe('planned');
