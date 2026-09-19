@@ -97,8 +97,8 @@ Exit: Goal → scheduled quest → сохранённая Activity; ручной
 | T-04b-3b2b ✔ | Persisted prepared intents | Exact canonical envelopes и refs/target/version/clock/day/settings до исполнения; intent validation в command transaction; crash между template и occurrence и после commit использует прежний intent |
 | T-04b-3b3 ◑ | Durable loop и Telegram resume | Assistant response до tools, restored refs/counters/results и checkpoints после каждого шага; commit→crash→redelivery сохраняет прежние intent/receipts; reply+processed update atomic |
 | T-04b-3b3a ✔ | Durable core и gateway restore | Typed checkpoint durable-turn-1; assistant до tools; restored refs/results/counters; intent-fenced mutations; pre-HTTP reserved rounds и renewal; crash/takeover tests; бот пока legacy |
-| T-04b-3b3b **следующая** | Telegram durable adapter | Scoped turn origin bot+update, short DB transactions вне model HTTP, claim=null handling/retry/exhaustion, terminal reply/outbox+processed update atomic; concurrent redelivery tests |
-| T-04b-3c | Атомарный бюджет provider attempts | Лимиты резервируются до HTTP, fallback учитывается отдельно, неизвестный usage не ноль; concurrent requests не превышают лимит; expiry/reconciliation и отказ сохраняют ручной путь |
+| T-04b-3b3b ✔ | Telegram durable adapter | Scoped turn origin bot+update, short DB transactions вне model HTTP, claim=null handling/retry/exhaustion, terminal reply/outbox+processed update atomic; concurrent redelivery tests |
+| T-04b-3c **следующая** | Атомарный бюджет provider attempts | Лимиты резервируются до HTTP, fallback учитывается отдельно, неизвестный usage не ноль; concurrent requests не превышают лимит; expiry/reconciliation и отказ сохраняют ручной путь |
 | T-04b-4 ◑ | Runtime config и свободный текст бота **сделаны вне очереди** (handoff 3.21, 3.22); bounded live acceptance — нет | Base/protocol/model/key из secret/config, первичная/резервная модели явно выбраны; synthetic live tool cycle, отказ/timeout/лимит; `/new`, `/today`, кнопки работают без AI; policy и durable budget из предыдущих срезов обязательны |
 
 T-04b в целом пока **не выполнена**. Только после её приёмки расширять AI

@@ -23,6 +23,10 @@ TRANSPORT_TESTS = 'tests/unit/ai-http-provider.test.ts'
 ROUTING_TESTS = 'tests/unit/ai-config.test.ts'
 BOT_TESTS = 'tests/integration/telegram-ai.test.ts'
 CANCEL_TESTS = 'tests/integration/telegram-cancel.test.ts'
+# Имя отличается от DURABLE_TESTS ниже намеренно: то описывает проверки самого
+# ядра. Совпадение имён однажды увело эти контроли на чужой файл, и они
+# «проходили», не запустив ни одной нужной проверки.
+TELEGRAM_DURABLE_TESTS = 'telegram-durable'
 RECUR_TESTS = 'tests/integration/telegram-recurring.test.ts'
 STOP_TESTS = 'tests/integration/telegram-stop.test.ts'
 RENAME_TESTS = 'tests/integration/telegram-rename.test.ts'
@@ -120,8 +124,12 @@ add('receipt gating', 'не подтверждает то, чего сервер
 # Честный отказ переехал из catch в ветку по stopReason: провайдерская ошибка
 # теперь ловится внутри runTurn. Подмена по старому месту ничего не роняла, то
 # есть защита стояла непроверенной.
-add('honest unavailability', 'отвечает честно и ничего не выдумывает', "  return { kind: result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply', body: renderTurn(result) };", "  return { kind: 'ai_reply', body: renderTurn(result) };", INBOX, BOT_TESTS)
-add('turn id determinism', 'повтор того же обновления', "  const turnId = derivedCommandId('ai-turn', update.update_id);", '  const turnId = randomUUID();', INBOX, BOT_TESTS)
+add('honest unavailability', 'отвечает честно и ничего не выдумывает', "        kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',", "        kind: 'ai_reply',", INBOX, BOT_TESTS)
+# Контроля на вывод идентификатора хода больше нет: он стоял на прежнем,
+# неустойчивом разборе. Свойство переехало в хранилище ходов — повтор по той же
+# области возвращает сохранённый ход, а случайный идентификатор упирается в
+# ограничение уникальности и даёт ошибку, а не неверный ответ. Закреплено
+# проверками ai-turn-store и ai-durable-turn.
 add('manual path independence', 'не ломает ручной путь', "  if (text.startsWith('/new') || text.startsWith('/every')) {", '  if (false) {', INBOX, BOT_TESTS)
 
 # Отмена задания: она не должна ни засчитываться выполнением, ни тихо
@@ -202,7 +210,7 @@ add('failed request not counted as completed round', 'отказ первого 
 add('no turn retry after provider failure', 'отказ первого раунда возвращает пустой результат', "    } catch {\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", "    } catch {\n      await options.provider.generateTurn(request).catch(() => undefined);\n      return { text: '', receipts: options.gateway.receipts(), failures, rounds, stopReason: 'provider_error' };", TURN, TURN_TESTS)
 add('gateway failures are not provider failures', 'ошибка исполнения инструмента не маскируется', '      const result = await options.gateway.invoke(call);', "      const result = await options.gateway.invoke(call).catch(() => ({ callId: call.id, name: call.name, status: 'rejected' as const, content: { error: 'masked' } }));", TURN, TURN_TESTS)
 add('Telegram displays committed receipt on outage', 'сохраняет подтверждение записи при отказе модели после commit', '  if (result.receipts.length > 0) {', '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
-add('Telegram distinguishes provider outage', 'сохраняет подтверждение записи при отказе модели после commit', "result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply'", "'ai_reply'", INBOX, 'tests/integration/telegram-ai.test.ts')
+add('Telegram distinguishes provider outage', 'сохраняет подтверждение записи при отказе модели после commit', "kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',", "kind: 'ai_reply',", INBOX, 'tests/integration/telegram-ai.test.ts')
 add('provider outage is not round limit', 'сохраняет подтверждение записи при отказе модели после commit', "  if (result.stopReason === 'provider_error') {", '  if (false) {', INBOX, 'tests/integration/telegram-ai.test.ts')
 
 # T-04b-3b1: durable storage, no tool execution or paid model calls.
@@ -321,6 +329,17 @@ add('durable create uses prepared frozen commands', 'commit then crash restores 
 
 add('durable provider request copy', 'provider cannot mutate stored transcript', 'structuredClone(state.messages)', 'state.messages', DURABLE, DURABLE_TESTS)
 add('durable reverse reference restoration', 'restored reverse reference map keeps q2', 'refByOccurrence.set(snapshot.occurrenceId, ref);', '', GATEWAY, DURABLE_TESTS)
+
+# Telegram на устойчивом ядре: занятый ход не разобран, исчерпанные попытки
+# отвечают по записанному, повторная доставка не считает ход заново.
+add('busy is not processed', 'остаётся неразобранным', '    return null;\n  } catch (error) {', '    return exhaustedReply([]);\n  } catch (error) {', INBOX, TELEGRAM_DURABLE_TESTS)
+add('exhausted answers', 'исчерпанные попытки дают ответ', '    if (stored !== null && stored.attempts >= stored.maxAttempts) {', '    if (false) {', INBOX, TELEGRAM_DURABLE_TESTS)
+# Контроля на вывод идентификатора хода из обновления здесь нет намеренно.
+# Случайный идентификатор при той же области упирается в ограничение
+# уникальности хранилища и даёт ошибку, а не неверный ответ: подмена проверяет
+# схему, а не код. Само свойство закреплено проверками хранилища
+# (ai-turn-store, ai-durable-turn): повтор по прежней области возвращает
+# сохранённый ход, а не заводит второй.
 
 start = int(sys.argv[1]) if len(sys.argv)>1 else 0
 stop = int(sys.argv[2]) if len(sys.argv)>2 else len(cases)

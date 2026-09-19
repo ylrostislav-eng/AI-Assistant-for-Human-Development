@@ -1,8 +1,15 @@
 import { randomUUID } from 'node:crypto';
 
-import { createToolGateway } from '../ai/gateway.ts';
+import {
+  DurableTurnError,
+  openDurableTurn,
+  parseDurableCheckpoint,
+  resumeDurableTurn,
+} from '../ai/durable-turn.ts';
+import { createToolGateway, type CommandReceiptSummary } from '../ai/gateway.ts';
 import type { AiProvider } from '../ai/provider.ts';
-import { runTurn, type TurnResult } from '../ai/turn.ts';
+import { readTurn } from '../ai/turn-store.ts';
+import { type TurnResult } from '../ai/turn.ts';
 import { lifetimeProgress } from '../progression/levels.ts';
 import { derivedCommandId } from '../../shared/commands/derived-id.ts';
 import type { Database, TransactionClient } from '../../shared/db/pool.ts';
@@ -98,6 +105,8 @@ export interface ProcessResult {
 interface PendingUpdate {
   readonly id: string;
   readonly update_id: string;
+  /** Область хода: один и тот же номер обновления у разных ботов — разные ходы. */
+  readonly bot_id: string;
   readonly kind: string | null;
   readonly sender_telegram_id: string | null;
   readonly payload: Record<string, unknown>;
@@ -220,7 +229,7 @@ async function composeReply(
   update: PendingUpdate,
   userId: string | null,
   options: ProcessOptions,
-): Promise<Reply | null> {
+): Promise<Reply | AiDeferral | null> {
   if (userId === null) {
     // Чужому отправителю отвечаем, но аккаунт ему не заводим.
     return {
@@ -283,7 +292,11 @@ async function composeReply(
     };
   }
 
-  return composeAiReply(db, update, userId, text, options.ai);
+  // Разбор моделью не делается здесь: эта ветка выполняется внутри транзакции,
+  // которая держит строку обновления заблокированной. Обращение к модели
+  // занимает секунды, и держать под ним блокировку нельзя — ход считается
+  // отдельно, вне транзакции.
+  return { deferAi: text };
 }
 
 /**
@@ -330,43 +343,133 @@ function renderTurn(result: TurnResult): string {
 }
 
 /**
- * Ход модели по свободному тексту.
+ * Отложенный разбор свободного текста.
  *
- * Идентификатор хода выведен из обновления, а не случайный: из него шлюз
- * выводит идентификаторы команд, и повторный разбор обновления возвращает
- * прежние квитанции вместо второго задания.
- *
- * Отказ поставщика не должен выглядеть поломкой бота. За два дня наблюдений
- * шлюз падал дважды, так что это обычный режим: человеку говорится прямо, что
- * ИИ сейчас недоступен, и называется путь, который работает всегда.
+ * Возвращается из `composeReply` вместо ответа: сам ход считается вне
+ * транзакции, потому что обращение к модели длится секунды, а транзакция
+ * держит строку обновления заблокированной.
  */
-async function composeAiReply(
-  db: Database,
-  update: PendingUpdate,
-  userId: string,
-  text: string,
-  provider: AiProvider,
-): Promise<Reply> {
-  const turnId = derivedCommandId('ai-turn', update.update_id);
-  const gateway = createToolGateway({ database: db, userId, turnId });
+interface AiDeferral {
+  readonly deferAi: string;
+}
 
-  let result: TurnResult;
-  try {
-    result = await runTurn({ provider, gateway, turnId, message: text, source: 'telegram' });
-  } catch {
-    // Причина отказа не пересказывается человеку: в ней бывает и кусок
-    // отправленного текста, и подробности чужой инфраструктуры.
-    return {
-      kind: 'ai_unavailable',
-      body: [
-        'ИИ сейчас недоступен — это со стороны поставщика, не с вашей.',
-        '',
-        'Работает как обычно: /new Английский 30м — записать задание, /today — список с кнопками.',
-      ].join('\n'),
-    };
+/** Обновление, ждущее хода модели между транзакциями. */
+interface Deferred {
+  readonly update: PendingUpdate;
+  readonly userId: string;
+  readonly target: string;
+  readonly text: string;
+}
+
+function isDeferral(value: Reply | AiDeferral | null): value is AiDeferral {
+  return value !== null && 'deferAi' in value;
+}
+
+/**
+ * Ответ при исчерпанных попытках.
+ *
+ * Попытки хода ограничены сверху, и когда они кончились, новых обращений к
+ * модели не будет никогда. Оставить обновление неразобранным значило бы, что
+ * оно висит в очереди вечно и человек не получает ничего. Поэтому ответ
+ * составляется из того, что сервер успел записать.
+ */
+function exhaustedReply(receipts: readonly CommandReceiptSummary[]): Reply {
+  const lines = ['ИИ сейчас недоступен — попытки по этому сообщению исчерпаны.'];
+  if (receipts.length > 0) {
+    // Промолчать о записанном значит заставить человека сделать это второй раз.
+    lines.push('', 'Но записать успел:', ...receipts.map(describeReceipt));
   }
+  lines.push(
+    '',
+    'Работает как обычно: /new Английский 30м — записать задание, /today — список с кнопками.',
+  );
+  return { kind: 'ai_unavailable', body: lines.join('\n') };
+}
 
-  return { kind: result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply', body: renderTurn(result) };
+/**
+ * Ход модели на устойчивом ядре.
+ *
+ * Выполняется **вне** транзакции разбора: внутри неё заблокирована строка
+ * обновления, а ответ модели занимает секунды. Само ядро открывает и ведёт ход
+ * своими короткими транзакциями и хранит контрольные точки, поэтому падение
+ * процесса не приводит ни ко второму заданию, ни ко второму оплаченному
+ * обращению.
+ *
+ * `null` означает «ещё не разобрано»: ход держит другой процесс, и ответ
+ * поставит он. Пометить обновление разобранным здесь значило бы потерять ответ.
+ */
+async function durableAiReply(
+  db: Database,
+  request: {
+    readonly userId: string;
+    readonly update: PendingUpdate;
+    readonly text: string;
+    readonly provider: AiProvider;
+  },
+): Promise<Reply | null> {
+  // Область хода включает бота: один и тот же номер обновления у разных ботов
+  // — разные ходы, и путать их нельзя.
+  const turnId = derivedCommandId('ai-turn', request.update.bot_id, request.update.update_id);
+  const source = {
+    channel: 'telegram' as const,
+    scope: `bot:${request.update.bot_id}`,
+    requestId: request.update.update_id,
+  };
+
+  try {
+    await openDurableTurn({
+      database: db,
+      userId: request.userId,
+      turnId,
+      source,
+      message: request.text,
+    });
+
+    const outcome = await resumeDurableTurn({
+      database: db,
+      userId: request.userId,
+      turnId,
+      provider: request.provider,
+    });
+
+    if (outcome.status === 'finished') {
+      return {
+        kind: outcome.result.stopReason === 'provider_error' ? 'ai_unavailable' : 'ai_reply',
+        body: renderTurn(outcome.result),
+      };
+    }
+
+    // Захватить ход не удалось. Причин две, и они требуют разного: ход ведёт
+    // другой процесс — ждём его; попытки кончились — отвечаем по записанному,
+    // иначе обновление не разберётся никогда.
+    const stored = await readTurn(db, request.userId, turnId);
+    if (stored !== null && stored.attempts >= stored.maxAttempts) {
+      return exhaustedReply(storedReceipts(stored.checkpoint));
+    }
+    return null;
+  } catch (error) {
+    if (error instanceof DurableTurnError) {
+      // Испорченная или чужой версии контрольная точка. Продолжать по ней
+      // нельзя, а молчать нельзя тем более: обновление зависнет.
+      return exhaustedReply([]);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Квитанции из сохранённой контрольной точки.
+ *
+ * Читаются мягко: если точка не разбирается, ответ будет без перечня, но он
+ * будет. Упасть здесь значит не ответить вовсе на том самом пути, который
+ * существует ради ответа при отказе.
+ */
+function storedReceipts(checkpoint: unknown): readonly CommandReceiptSummary[] {
+  try {
+    return parseDurableCheckpoint(checkpoint).gateway.receipts;
+  } catch {
+    return [];
+  }
 }
 
 /**
@@ -953,9 +1056,15 @@ export async function processPendingUpdates(
 ): Promise<ProcessResult> {
   const limit = options.limit ?? DEFAULT_LIMIT;
 
-  return withTransaction(db, async (client) => {
+  // Разбор идёт в три шага, а не в одной транзакции. Прежний разбор держал
+  // строку обновления заблокированной всё время, пока отвечает модель: до
+  // тридцати секунд на каждое сообщение. Ход модели вынесен между короткими
+  // транзакциями, и под ним не держится ни одна блокировка.
+  const deferred: Deferred[] = [];
+
+  const first = await withTransaction(db, async (client) => {
     const pending = await client.query<PendingUpdate>(
-      `SELECT id, update_id, kind, sender_telegram_id, payload
+      `SELECT id, update_id, bot_id, kind, sender_telegram_id, payload
          FROM telegram_updates
         WHERE processed_at IS NULL
         ORDER BY received_at
@@ -984,13 +1093,23 @@ export async function processPendingUpdates(
 
       const target = chatId(update.payload);
       const isButton = update.kind === 'callback_query';
-      const reply =
+      const outcome =
         sender === null || target === null
           ? null
           : isButton
             ? await handleButtonPress(db, client, update, userId)
             : await composeReply(db, client, update, userId, options);
 
+      if (isDeferral(outcome)) {
+        // Обновление остаётся неразобранным до конца хода. Пометить его здесь
+        // значило бы потерять ответ при падении процесса.
+        if (userId !== null && target !== null) {
+          deferred.push({ update, userId, target, text: outcome.deferAi });
+        }
+        continue;
+      }
+
+      const reply = outcome;
       if (reply !== null && target !== null) {
         await client.query(
           `INSERT INTO telegram_messages
@@ -1030,6 +1149,42 @@ export async function processPendingUpdates(
 
     return { processed: pending.rowCount ?? 0, replies };
   });
+
+  let replies = first.replies;
+  const provider = options.ai ?? null;
+  for (const item of deferred) {
+    if (provider === null) {
+      continue;
+    }
+    const reply = await durableAiReply(db, {
+      userId: item.userId,
+      update: item.update,
+      text: item.text,
+      provider,
+    });
+    if (reply === null) {
+      // Ход держит другой процесс: ответ поставит он. Второй ответ на одно
+      // сообщение хуже, чем задержка.
+      continue;
+    }
+
+    // Ответ и пометка разбора — одной транзакцией. Иначе сбой между ними
+    // оставит ответ без пометки, и человек получит его дважды.
+    await withTransaction(db, async (client) => {
+      await client.query(
+        `INSERT INTO telegram_messages (user_id, chat_id, kind, body, dedupe_key)
+         VALUES ($1::uuid, $2, $3, $4, $5)
+         ON CONFLICT (dedupe_key) DO NOTHING`,
+        [item.userId, item.target, reply.kind, reply.body, `update:${item.update.update_id}`],
+      );
+      await client.query('UPDATE telegram_updates SET processed_at = now() WHERE id = $1', [
+        item.update.id,
+      ]);
+    });
+    replies += 1;
+  }
+
+  return { processed: first.processed, replies };
 }
 
 /**
